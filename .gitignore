@@ -1,0 +1,27 @@
+# Dependencias
+node_modules/
+
+# Cloudflare Wrangler
+.wrangler/
+
+# Variables de entorno y secretos
+.dev.vars
+dev.vars
+.env
+.env.*
+!.env.example
+
+# Compilados
+frontend/dist/
+
+# Logs
+*.log
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Solo sirven en el computador local
+wrangler.local.toml
+.dev copy.vars
+ES2_texto_completo.txt

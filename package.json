@@ -1,0 +1,31 @@
+{
+  "name": "proyecto_de_titulo",
+  "version": "1.0.0",
+  "description": "GastroStock FEFO publicado en Cloudflare",
+  "main": "index.js",
+  "scripts": {
+    "deploy:api": "wrangler deploy",
+    "deploy:sitio": "npm run build --prefix frontend && wrangler deploy --config wrangler.sitio.toml"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PauxSy/proyecto-de-titulo-produccion.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/PauxSy/proyecto-de-titulo-produccion/issues"
+  },
+  "homepage": "https://gastrostock.gastrostock-paula.workers.dev",
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "bcryptjs": "^3.0.3",
+    "hono": "^4.13.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260921.1",
+    "wrangler": "^4.149.0"
+  }
+}

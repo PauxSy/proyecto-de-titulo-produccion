@@ -1,0 +1,2 @@
+DATABASE_URL=postgresql://USUARIO:PASSWORD@HOST/neondb?sslmode=require
+JWT_SECRET=generar_con_node_crypto_randomBytes
