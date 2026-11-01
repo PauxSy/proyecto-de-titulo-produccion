@@ -111,11 +111,6 @@ function Login({ onLoginExitoso }) {
       </div>
 
       <div className="auth-form-panel">
-        <div className="auth-tabs">
-          <button className="auth-tab active">Iniciar Sesión</button>
-          <button className="auth-tab" disabled title="Próximamente">Crear Cuenta</button>
-        </div>
-
         <h2 className="auth-form-title">Bienvenido de vuelta</h2>
         <p className="auth-form-subtitle">Ingrese sus credenciales para acceder al panel</p>
 

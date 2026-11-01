@@ -132,33 +132,6 @@ body {
   max-width: 420px;
 }
 
-.auth-tabs {
-  display: flex;
-  gap: 6px;
-  background: #0a0e1a;
-  border-radius: 10px;
-  padding: 4px;
-  margin-bottom: 24px;
-}
-
-.auth-tab {
-  flex: 1;
-  text-align: center;
-  padding: 9px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #94a3b8;
-  border-radius: 8px;
-  cursor: pointer;
-  border: none;
-  background: none;
-}
-
-.auth-tab.active {
-  background: #2563eb;
-  color: white;
-}
-
 .auth-form-title {
   color: white;
   font-size: 19px;
