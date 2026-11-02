@@ -11,6 +11,42 @@ const CATEGORIAS = [
   'Comida China',
 ]
 
+const normalizar = (texto) => String(texto || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim()
+
+const cortoInsumo = (nombre) => nombre
+  .replace(/\s*\([^)]*\)\s*/g, ' ')
+  .replace(/\s+\d+(?:[.,]\d+)?\s*(?:kg|g|gr|ml|l|lt|un)\b/gi, '')
+  .replace(/\s{2,}/g, ' ')
+  .trim()
+
+const escaparRegExp = (texto) => texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const proximosDeLaReceta = (ingredientes, porVencer) => {
+  const porNombre = new Map(porVencer.map((item) => [normalizar(item.producto), item]))
+  const presentes = (ingredientes || [])
+    .map((ing) => porNombre.get(normalizar(ing.producto)))
+    .filter(Boolean)
+  if (presentes.length === 0) return new Set()
+  const minimo = Math.min(...presentes.map((item) => Number(item.dias_para_vencer)))
+  return new Set(
+    presentes
+      .filter((item) => Number(item.dias_para_vencer) === minimo)
+      .map((item) => normalizar(item.producto))
+  )
+}
+
+const resaltarPaso = (paso, nombres) => {
+  const claves = [...new Set(nombres.map(cortoInsumo).filter((nombre) => nombre.length >= 4))]
+  if (claves.length === 0) return paso
+  const partes = paso.split(new RegExp(`(${claves.map(escaparRegExp).join('|')})`, 'gi'))
+  if (partes.length === 1) return paso
+  return partes.map((parte, indice) => (
+    indice % 2 === 1
+      ? <mark key={`${indice}-${parte}`} className="sugerencia-marca">{parte}</mark>
+      : parte
+  ))
+}
+
 function ChefIaPanel() {
   const recetaGuardada = leerRecetaIa()
   const [datos, setDatos] = useState(recetaGuardada)
@@ -180,7 +216,7 @@ function ChefIaPanel() {
         <div className="icon-badge">✨</div>
         <div className="card-header-texto">
           <h1>Chef IA y rescate</h1>
-          <p className="subtitle">Recetas de {categoria} para usar primero lo que está por vencer</p>
+          <p className="subtitle">Recetas de {categoria} para usar primero lo que está por vencer. El resto de ingredientes sale del inventario.</p>
         </div>
         <button type="button" className="btn-mini btn-mini-outline" onClick={cargar} disabled={cargando || guardando}>
           Actualizar
@@ -226,23 +262,38 @@ function ChefIaPanel() {
         <>
           <h2 className="subtitulo-seccion">{datos?.origen === 'local' ? 'Recetas de respaldo' : 'Sugerencias del Chef'}</h2>
           <div className="sugerencias-chef">
-            {datos.sugerencias.map((item) => (
+            {datos.sugerencias.map((item) => {
+              const proximos = proximosDeLaReceta(item.ingredientes, porVencer)
+              const porNombre = new Map(porVencer.map((fila) => [normalizar(fila.producto), fila]))
+              const nombresProximos = (item.ingredientes || [])
+                .filter((ing) => proximos.has(normalizar(ing.producto)))
+                .map((ing) => ing.producto)
+              return (
               <article key={`${item.receta_id || 'nueva'}-${item.titulo}`} className="sugerencia-card">
                 <span className="codigo">{item.tipo === 'promocion' ? 'Promoción' : 'Receta'}</span>
                 <h3>{item.titulo}</h3>
-                <p>{item.descripcion}</p>
+                <p>{resaltarPaso(item.descripcion || '', nombresProximos)}</p>
                 <h4>Ingredientes</h4>
                 <ul className="sugerencia-lista">
-                  {(item.ingredientes || []).map((ing) => (
-                    <li key={ing.producto}>
-                      {ing.producto}: {new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 }).format(ing.cantidad)} {ing.unidad}
+                  {(item.ingredientes || []).map((ing) => {
+                    const ficha = proximos.has(normalizar(ing.producto)) ? porNombre.get(normalizar(ing.producto)) : null
+                    return (
+                    <li key={ing.producto} className={ficha ? 'sugerencia-por-vencer' : undefined}>
+                      <span className="sugerencia-insumo-nombre">
+                        <strong>{new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 }).format(ing.cantidad)} {ing.unidad}</strong>
+                        de {cortoInsumo(ing.producto)}
+                        {ficha && (
+                          <span className="sugerencia-vence">vence {ficha.vence} · {ficha.dias_para_vencer} día(s)</span>
+                        )}
+                      </span>
                     </li>
-                  ))}
+                    )
+                  })}
                 </ul>
                 <h4>Preparación</h4>
                 <ol className="sugerencia-lista">
                   {(item.pasos || []).map((paso) => (
-                    <li key={paso}>{paso}</li>
+                    <li key={paso}><span>{resaltarPaso(paso, nombresProximos)}</span></li>
                   ))}
                 </ol>
                 {item.receta_id && (
@@ -251,7 +302,8 @@ function ChefIaPanel() {
                   </button>
                 )}
               </article>
-            ))}
+              )
+            })}
           </div>
         </>
       )}

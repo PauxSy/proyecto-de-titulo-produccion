@@ -2647,10 +2647,52 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 10px 0;
   font-size: 13.5px;
   color: #334155;
   border-bottom: 1px dashed #cbd5e1; /* Líneas punteadas elegantes */
+}
+
+.sugerencia-insumo-nombre {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sugerencia-insumo-cantidad {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.sugerencia-lista li.sugerencia-por-vencer {
+  background: #fffbeb;
+  margin: 0 -24px;
+  padding: 10px 24px;
+  border-bottom-color: #fcd34d;
+}
+
+.sugerencia-vence {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: #f59e0b;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.sugerencia-marca {
+  background: #fde68a;
+  color: #92400e;
+  font-weight: 700;
+  padding: 0 3px;
+  border-radius: 4px;
 }
 
 .sugerencia-lista li:last-child {

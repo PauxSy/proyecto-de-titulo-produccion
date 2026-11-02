@@ -6,6 +6,7 @@ import { consultaInventario, registrarMerma, soloAdministrador, soloBodegueroOAd
 import { cors } from 'hono/cors'; 
 import usuarios from './routes/usuarios';
 import recetas from './routes/recetas';
+import { armarSugerenciasLocales, cerrarSugerenciaModelo, normalizarTexto, type InsumoCocina } from './chefRecetas';
 
 type Bindings = {
   DATABASE_URL: string;
@@ -1943,10 +1944,9 @@ app.post('/comandas', soloChef, async (c) => {
 });
 
 // GET /ia/sugerencias (HU-14)
-// 1. Consulta en PostgreSQL los insumos en riesgo: lotes próximos a vencer (FEFO) y productos con mayor stock.
-// 2. Envía ese listado como contexto a un LLM de Cloudflare Workers AI y devuelve sugerencias estructuradas.
-// El mismo modelo de antes. Los pasos ya no se le piden: el servidor los arma.
-// Así genera mucho menos texto y la respuesta llega antes.
+// 1. Consulta los insumos por vencer y el resto de la despensa.
+// 2. La IA arma una receta real: usa lo que vence y puede completar con otros insumos que no estén por vencer.
+// Si el modelo no entrega una receta completa, el servidor arma una con el mismo criterio.
 const MODELO_IA = '@cf/meta/llama-4-scout-17b-16e-instruct';
 const TTL_CACHE_IA_MS = 120_000;
 const cacheSugerenciasIa = new Map<string, { vence: number; cuerpo: any }>();
@@ -1962,348 +1962,6 @@ const CATEGORIAS_RESTAURANTE = [
   'Comida China',
 ] as const;
 const CATEGORIA_RESTAURANTE_INICIAL = 'Repostería';
-
-const normalizarTexto = (texto: string) => texto.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
-
-const cortoInsumo = (nombre: string) =>
-  nombre.replace(/\s+\d+(?:[.,]\d+)?\s*(?:kg|g|gr|ml|l|lt|un)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
-
-const textoDias = (dias: number) => {
-  if (dias <= 0) return 'hoy';
-  if (dias === 1) return 'mañana';
-  return `en ${dias} días`;
-};
-
-type RolInsumo = 'aceite' | 'seco' | 'picable' | 'proteina' | 'lacteo' | 'otro';
-
-const rolInsumo = (nombre: string): RolInsumo => {
-  const texto = normalizarTexto(nombre);
-  if (/aceite/.test(texto)) return 'aceite';
-  if (/harina|azucar|arroz|fideo|pasta|maicena|pan rallado/.test(texto)) return 'seco';
-  if (/tomate|cebolla|ajo|pimenton|pimiento|lechuga|repollo|apio|zanahoria|papa|choclo|aji|jengibre|albahaca|cilantro|champinon|brocoli|zapallo|pepino|palta|limon|lima/.test(texto)) return 'picable';
-  if (/pollo|carne|cerdo|pescado|camaron|huevo|tofu|jamon/.test(texto)) return 'proteina';
-  if (/leche|crema|queso|mantequilla|margarina|manteca|manjar|yogurt/.test(texto)) return 'lacteo';
-  return 'otro';
-};
-
-const esInsumoDeApoyo = (nombre: string) => {
-  const rol = rolInsumo(nombre);
-  return rol === 'aceite' || rol === 'seco';
-};
-
-// El aceite envasado (maravilla, oliva, vegetal) se vende. No es un plato ni se "prepara".
-const esInsumoDeVenta = (nombre: string) => /aceite/.test(normalizarTexto(nombre));
-
-// Qué insumos priorizar según el tipo de restaurante. El nombre se compara sin acentos.
-const PREFERENCIA_CATEGORIA: Record<string, RegExp> = {
-  'Repostería': /azucar|manjar|cacao|chocolate|harina|margarina|mantequilla|manteca|huevo|crema|leche|vainilla|fruta|nuez|almendra|dulce|maicena|miel|mermelada/,
-  'Comida Italiana': /tomate|harina|queso|albahaca|pasta|cebolla|ajo|crema|oregano/,
-  'Comida Rápida': /tomate|queso|pan|harina|carne|pollo|papa|lechuga|huevo/,
-  'Comida Tailandesa': /aji|coco|limon|lima|arroz|pollo|pescado|cebolla|jengibre/,
-  'Comida Chilena': /tomate|aji|cebolla|carne|pollo|papa|choclo|harina|huevo|poroto/,
-  'Comida China': /arroz|pollo|carne|cebolla|ajo|jengibre|harina|soya|repollo/,
-};
-
-const ordenarInsumosPorCategoria = (items: any[], categoria: string) => {
-  const preferencia = PREFERENCIA_CATEGORIA[categoria];
-  return [...items].sort((a, b) => {
-    const afinA = preferencia?.test(normalizarTexto(String(a.producto))) ? 0 : 1;
-    const afinB = preferencia?.test(normalizarTexto(String(b.producto))) ? 0 : 1;
-    if (afinA !== afinB) return afinA - afinB;
-    return Number(a.dias_para_vencer) - Number(b.dias_para_vencer);
-  });
-};
-
-const describirRescate = (categoria: string, usados: string[], items: any[]) => {
-  const detalle = usados.map((nombre) => {
-    const item = items.find((fila) => fila.producto === nombre);
-    return `${cortoInsumo(nombre)} (vence ${textoDias(Number(item?.dias_para_vencer))})`;
-  }).join(', ');
-  const hayAceite = usados.some((nombre) => rolInsumo(nombre) === 'aceite');
-  const hayHarina = usados.some((nombre) => /harina/.test(normalizarTexto(nombre)));
-  const hayPrincipal = usados.some((nombre) => !esInsumoDeApoyo(nombre));
-  if (hayAceite && hayHarina && !hayPrincipal) {
-    return `Masa de ${categoria} que gasta una porción de la harina y del aceite que vencen primero. El aceite se mezcla en la masa: no se pica y no se usa la botella entera. Lleva ${detalle}.`;
-  }
-  if (hayAceite && !hayPrincipal) {
-    return `El aceite que vence se usa para cocinar, en cucharadas. No es un ingrediente para picar ni se gasta la botella completa. Lleva ${detalle}.`;
-  }
-  return `Receta de ${categoria} para usar primero lo que está por vencer. Lleva ${detalle}.`;
-};
-
-const formatearCantidad = (cantidad: number) =>
-  new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 }).format(cantidad);
-
-const ajustarAlDisponible = (cantidad: number, disponible: number, unidad: string) => {
-  const tope = disponible > 0 ? Math.min(cantidad, disponible) : cantidad;
-  if (!(tope > 0)) return 0;
-  return unidad === 'un' ? Math.max(1, Math.floor(tope)) : Math.round(tope * 10) / 10;
-};
-
-// Porción de cocina. Una botella o una bolsa de 1 kg no es una porción: el aceite se mide en cucharadas y la harina en gramos.
-const porcionExacta = (item: any) => {
-  const disponible = Number(item?.cantidad_en_riesgo);
-  const unidadStock = typeof item?.unidad_medida === 'string' ? item.unidad_medida : 'un';
-  if (!(disponible > 0)) return null;
-  const nombre = normalizarTexto(String(item?.producto ?? ''));
-  const rol = rolInsumo(nombre);
-  if (rol === 'aceite') return { cantidad: 2, unidad: 'cucharadas' };
-  if (/harina/.test(nombre)) return { cantidad: 150, unidad: 'g' };
-  if (/azucar/.test(nombre)) return { cantidad: 40, unidad: 'g' };
-  if (/arroz|fideo|pasta/.test(nombre)) return { cantidad: 80, unidad: 'g' };
-  if (/maicena/.test(nombre)) return { cantidad: 15, unidad: 'g' };
-  if (unidadStock === 'un') return { cantidad: 1, unidad: 'un' };
-  let objetivo = unidadStock === 'ml' ? 30 : 150;
-  if (unidadStock === 'gr') {
-    if (/margarina|mantequilla|manteca|manjar/.test(nombre)) objetivo = 40;
-    else if (/cacao|chocolate/.test(nombre)) objetivo = 40;
-    else if (/tomate/.test(nombre)) objetivo = 200;
-  }
-  if (rol === 'aceite' && unidadStock === 'ml') objetivo = 30;
-  return { cantidad: ajustarAlDisponible(objetivo, disponible, unidadStock), unidad: unidadStock };
-};
-
-const ingredientesMedidos = (nombres: string[], items: any[], receta?: any, pedidos?: Map<string, number>) =>
-  nombres.map((nombre) => {
-    const clave = normalizarTexto(nombre);
-    const item = items.find((fila) => normalizarTexto(String(fila.producto)) === clave);
-    const deLaFicha = receta?.ingredientes?.find((ing: any) => normalizarTexto(String(ing.producto)) === clave);
-    const base = porcionExacta(item);
-    const unidadStock = item?.unidad_medida || 'un';
-    const unidad = base?.unidad || deLaFicha?.unidad || unidadStock;
-    const disponible = Number(item?.cantidad_en_riesgo);
-    const pedida = pedidos?.get(clave);
-    const deReceta = Number(deLaFicha?.cantidad);
-    const tope = base?.cantidad ?? disponible;
-    // El modelo pide cantidades en la unidad del inventario (1 un = la botella o la bolsa).
-    // Esa cifra solo vale si la porción de cocina usa la misma unidad.
-    const pedidaEnLaMismaUnidad = pedida != null && pedida > 0 && unidad === unidadStock && pedida <= tope
-      ? pedida
-      : null;
-    const preferida = deReceta > 0 && (deLaFicha?.unidad || unidadStock) === unidad
-      ? deReceta
-      : pedidaEnLaMismaUnidad ?? (base?.cantidad ?? 0);
-    const mismaUnidad = unidad === unidadStock;
-    const cantidad = mismaUnidad
-      ? ajustarAlDisponible(preferida, disponible, unidad)
-      : (preferida > 0 ? preferida : 0);
-    if (!(cantidad > 0)) return null;
-    return { producto: String(item?.producto || nombre), cantidad, unidad };
-  }).filter((ing): ing is { producto: string; cantidad: number; unidad: string } => ing !== null);
-
-const textoInsumo = (ing: { producto: string; cantidad: number; unidad: string }) =>
-  `${formatearCantidad(ing.cantidad)} ${ing.unidad} de ${cortoInsumo(ing.producto)}`;
-
-const armarPasos = (categoria: string, titulo: string, ingredientes: { producto: string; cantidad: number; unidad: string }[]) => {
-  const porRol = (rol: RolInsumo) => ingredientes.filter((ing) => rolInsumo(ing.producto) === rol);
-  const aceites = porRol('aceite');
-  const secos = porRol('seco');
-  const picables = porRol('picable');
-  const proteinas = porRol('proteina');
-  const principales = [...picables, ...proteinas, ...porRol('lacteo'), ...porRol('otro')];
-  const harina = secos.find((ing) => /harina/.test(normalizarTexto(ing.producto)));
-  const aceite = aceites[0];
-  const lista = ingredientes.map(textoInsumo).join('; ');
-
-  if (aceite && harina && principales.length === 0) {
-    const uso = categoria === 'Comida China'
-      ? 'Estira la masa bien fina y corta círculos para dumplings o wonton.'
-      : categoria === 'Comida Italiana'
-        ? 'Estira la masa y córtala en cintas para pasta fresca.'
-        : categoria === 'Repostería'
-          ? 'Estira la masa, fórrala en un molde y hornéala a 180 °C hasta que el borde dore.'
-          : 'Estira la masa y úsala para empanadas o para empanizar.';
-    return [
-      `Separa ${textoInsumo(harina)} de la bolsa que vence primero. No ocupes el paquete entero.`,
-      `Agrega ${textoInsumo(aceite)} y 80 ml de agua tibia. El aceite se mezcla en la masa: no se pica ni se echa solo al fuego.`,
-      'Amasa 6 minutos, hasta que quede lisa y deje de pegarse en las manos.',
-      'Tapa y deja reposar 20 minutos.',
-      uso,
-      `Sirve ${titulo}. El resto de la botella y de la bolsa sigue en inventario.`,
-    ];
-  }
-
-  if (aceite && principales.length === 0) {
-    return [
-      `Mide ${textoInsumo(aceite)} de la botella que vence primero.`,
-      'Calienta esas cucharadas en el sartén o wok a fuego medio, hasta que el aceite brille. No se pica.',
-      'Saltea ahí la preparación del servicio. Dos cucharadas alcanzan para una tanda; no vacíes la botella.',
-      `Retira del fuego cuando el aceite esté caliente pero sin humo. Así se aprovecha ${cortoInsumo(aceite.producto)} antes de que venza.`,
-    ];
-  }
-
-  const coccion = categoria === 'Comida China'
-    ? 'Saltea a fuego alto 4 minutos, moviendo sin parar.'
-    : categoria === 'Comida Tailandesa'
-      ? 'Cocina a fuego medio-alto 6 minutos, hasta que el aroma esté concentrado.'
-      : categoria === 'Comida Rápida'
-        ? 'Cocina a fuego alto 5 minutos y retira en cuanto el interior esté caliente.'
-        : categoria === 'Comida Chilena'
-          ? 'Cocina a fuego medio 15 minutos, con la olla tapada los últimos 5.'
-          : 'Sofríe a fuego medio 8 minutos y luego cocina 10 minutos más.';
-  const picado = picables.map(textoInsumo);
-  const aLaOlla = [...picables, ...proteinas, ...porRol('lacteo'), ...porRol('otro')].map(textoInsumo);
-  const secosTexto = secos.map(textoInsumo);
-
-  if (categoria === 'Repostería' && !aceite) {
-    return [
-      `Pesa por separado ${lista}.`,
-      secos.length > 0
-        ? `Tamiza ${secosTexto.join('; ')} hasta que quede fino y sin grumos.`
-        : 'Mezcla las cantidades ya pesadas en un bol.',
-      picado.length > 0 ? `Incorpora ${picado.join('; ')}.` : 'Mezcla 3 minutos, hasta que la masa quede homogénea.',
-      'Engrasa un molde, vierte la mezcla y nivela la superficie.',
-      'Hornea a 180 °C durante 22 minutos. Al pinchar el centro, el palillo debe salir limpio.',
-      `Deja enfriar 15 minutos antes de porcionar ${titulo}.`,
-    ];
-  }
-
-  return [
-    `Mide ${lista}.`,
-    picado.length > 0
-      ? `Lava y pica solo esto: ${picado.join('; ')}. El corte es de 1 cm.`
-      : 'No hay vegetales que picar en esta preparación.',
-    aceite
-      ? `Calienta ${textoInsumo(aceite)} hasta que brille y agrega ${aLaOlla.join('; ') || 'la preparación'}. ${coccion} El aceite no se pica.`
-      : `Cocina ${aLaOlla.join('; ') || 'la base'}. ${coccion}`,
-    secosTexto.length > 0
-      ? `Incorpora ${secosTexto.join('; ')} para espesar o completar, sin dejar grumos.`
-      : 'Prueba el punto: el centro debe estar caliente y los vegetales, tiernos pero enteros.',
-    `Sirve ${titulo}. Con estas medidas se usa una porción del lote que vence primero, no el envase entero.`,
-  ];
-};
-
-// Respaldo de HU-14: platos fijos por rubro. Se usan solo si la IA no entrega una receta.
-const RECETAS_LOCALES_POR_RUBRO: Record<string, { titulo: string; claves: RegExp }[]> = {
-  'Repostería': [
-    { titulo: 'Queque húmedo', claves: /huevo|azucar|harina|leche|mantequilla|margarina|vainilla/ },
-    { titulo: 'Galletas de mantequilla', claves: /mantequilla|margarina|harina|azucar|huevo/ },
-    { titulo: 'Brownies de cacao', claves: /cacao|chocolate|huevo|azucar|harina|mantequilla/ },
-    { titulo: 'Tarta de crema', claves: /crema|leche|huevo|azucar|fruta|manjar/ },
-  ],
-  'Comida Italiana': [
-    { titulo: 'Pasta al pomodoro', claves: /tomate|pasta|fideo|ajo|albahaca|queso|cebolla/ },
-    { titulo: 'Lasaña de carne', claves: /carne|queso|tomate|pasta|cebolla/ },
-    { titulo: 'Risotto', claves: /arroz|queso|cebolla|crema/ },
-  ],
-  'Comida Rápida': [
-    { titulo: 'Hamburguesa casera', claves: /carne|pan|queso|lechuga|tomate/ },
-    { titulo: 'Papas con queso', claves: /papa|queso/ },
-    { titulo: 'Sándwich de pollo', claves: /pollo|pan|lechuga|tomate|huevo/ },
-  ],
-  'Comida Tailandesa': [
-    { titulo: 'Salteado thai de pollo', claves: /pollo|aji|cebolla|jengibre|arroz/ },
-    { titulo: 'Arroz con limón y verduras', claves: /arroz|limon|lima|cebolla|aji/ },
-    { titulo: 'Pescado al coco', claves: /pescado|coco|limon|aji|cebolla/ },
-  ],
-  'Comida Chilena': [
-    { titulo: 'Cazuela de ave', claves: /pollo|papa|zapallo|choclo|cebolla|zanahoria/ },
-    { titulo: 'Porotos granados', claves: /poroto|zapallo|choclo|cebolla/ },
-    { titulo: 'Empanada de pino', claves: /carne|cebolla|huevo|harina|aji/ },
-    { titulo: 'Charquicán', claves: /carne|papa|zapallo|choclo|cebolla/ },
-  ],
-  'Comida China': [
-    { titulo: 'Pollo con verduras salteadas', claves: /pollo|cebolla|ajo|jengibre|repollo|zanahoria/ },
-    { titulo: 'Arroz chaufa', claves: /arroz|huevo|cebolla|pollo|carne|ajo/ },
-    { titulo: 'Chop suey de carne', claves: /carne|repollo|cebolla|ajo|zanahoria/ },
-  ],
-};
-
-const promocionDeVenta = (items: any[]) => {
-  const venta = items.filter((item) => esInsumoDeVenta(String(item.producto)));
-  if (venta.length === 0) return [];
-  const nombres = venta.slice(0, 3).map((item) => cortoInsumo(String(item.producto)));
-  return [{
-    tipo: 'promocion' as const,
-    titulo: nombres.length === 1 ? `Oferta: vender ${nombres[0]}` : `Oferta: vender ${nombres[0]} y otros`,
-    descripcion: `${nombres.join(', ')} se vende en su envase. No se prepara como receta ni se fabrica. Conviene ofrecerlo antes de que venza.`,
-    insumos_usados: venta.slice(0, 3).map((item) => String(item.producto)),
-    ingredientes: venta.slice(0, 3).map((item) => ({
-      producto: String(item.producto),
-      cantidad: Number(item.cantidad_en_riesgo),
-      unidad: String(item.unidad_medida || 'un'),
-    })).filter((ing) => ing.cantidad > 0),
-    pasos: [
-      'No armes una receta con este insumo: se vende cerrado, en su envase.',
-      'Ofrécelo en el local antes de la fecha de vencimiento del lote más próximo.',
-      'Si hay varios lotes, despacha primero el que vence antes.',
-    ],
-  }];
-};
-
-const armarSugerenciasLocales = (categoria: string, proximos: any[], recetasMenu: any[]) => {
-  const cocinables = ordenarInsumosPorCategoria(
-    proximos.filter((item) => !esInsumoDeVenta(String(item.producto))),
-    categoria,
-  );
-  const preferencia = PREFERENCIA_CATEGORIA[categoria];
-  const catalogo = RECETAS_LOCALES_POR_RUBRO[categoria] ?? [];
-  const tokenRubro = normalizarTexto(categoria).replace(/^comida\s+/, '');
-
-  const armarReceta = (titulo: string, nombres: string[], receta?: any) => {
-    if (/aceite/.test(normalizarTexto(titulo))) return null;
-    const usados = [...new Set(nombres)].filter((nombre) => nombre && !esInsumoDeVenta(nombre)).slice(0, 4);
-    const ingredientes = ingredientesMedidos(usados, cocinables, receta);
-    if (ingredientes.length === 0) return null;
-    return {
-      tipo: 'receta' as const,
-      ...(receta ? { receta_id: receta.id } : {}),
-      titulo,
-      descripcion: describirRescate(categoria, ingredientes.map((ing) => ing.producto), cocinables),
-      insumos_usados: ingredientes.map((ing) => ing.producto),
-      ingredientes,
-      pasos: armarPasos(categoria, titulo, ingredientes),
-    };
-  };
-
-  const delMenu = recetasMenu
-    .map((receta) => {
-      const insumos = receta.ingredientes
-        .map((ing: any) => String(ing.producto))
-        .filter((nombre: string) =>
-          !esInsumoDeVenta(nombre)
-          && cocinables.some((item) => normalizarTexto(String(item.producto)) === normalizarTexto(nombre))
-        );
-      const rubro = normalizarTexto(String(receta.rubro || ''));
-      const encajaRubro = rubro.length > 0 && (rubro.includes(tokenRubro) || tokenRubro.includes(rubro));
-      const encajaInsumo = insumos.some((nombre: string) => preferencia?.test(normalizarTexto(nombre)));
-      return { receta, insumos, encaja: encajaRubro || encajaInsumo };
-    })
-    .filter((item) => item.encaja && item.insumos.length > 0)
-    .slice(0, 2)
-    .map(({ receta, insumos }) => armarReceta(receta.nombre_plato, insumos, receta))
-    .filter((item): item is NonNullable<typeof item> => item !== null);
-
-  const delCatalogo = catalogo
-    .map((plantilla) => {
-      const usados = cocinables
-        .filter((item) => plantilla.claves.test(normalizarTexto(String(item.producto))))
-        .map((item) => String(item.producto));
-      return { plantilla, usados };
-    })
-    .filter((item) => item.usados.length > 0)
-    .sort((a, b) => b.usados.length - a.usados.length)
-    .slice(0, 2)
-    .map((item) => armarReceta(item.plantilla.titulo, item.usados))
-    .filter((item): item is NonNullable<typeof item> => item !== null);
-
-  const generica = delMenu.length === 0 && delCatalogo.length === 0 && cocinables[0]
-    ? armarReceta(
-      `Preparación de ${cortoInsumo(String(cocinables[0].producto))}`,
-      [String(cocinables[0].producto), cocinables[1] ? String(cocinables[1].producto) : ''].filter(Boolean),
-    )
-    : null;
-
-  const vistas = new Set<string>();
-  const recetas = [...delMenu, ...delCatalogo, ...(generica ? [generica] : [])].filter((item) => {
-    const clave = normalizarTexto(item.titulo);
-    if (!clave || vistas.has(clave) || /aceite/.test(clave)) return false;
-    vistas.add(clave);
-    return true;
-  });
-
-  return [...recetas, ...promocionDeVenta(proximos)].slice(0, 4);
-};
 
 const esCategoriaRestaurante = (valor: unknown): valor is (typeof CATEGORIAS_RESTAURANTE)[number] =>
   typeof valor === 'string' && (CATEGORIAS_RESTAURANTE as readonly string[]).includes(valor);
@@ -2344,8 +2002,13 @@ const ESQUEMA_SUGERENCIAS = {
               required: ['nombre', 'cantidad'],
             },
           },
+          pasos: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '4 a 6 pasos concretos de preparación',
+          },
         },
-        required: ['tipo', 'titulo', 'receta_id', 'insumos_usados', 'ingredientes'],
+        required: ['tipo', 'titulo', 'receta_id', 'insumos_usados', 'ingredientes', 'pasos'],
       },
     },
   },
@@ -2397,6 +2060,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
   let categoriaRestaurante = CATEGORIA_RESTAURANTE_INICIAL;
   let proximosAVencer: any[];
   let mayorStock: any[];
+  let despensaFilas: any[] = [];
   let recetasMenu: any[] = [];
   let diasAlerta = 7;
   try {
@@ -2406,7 +2070,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     ]);
     categoriaRestaurante = categoria;
     diasAlerta = umbrales.amarillo;
-    const [vencer, stock, menu] = await Promise.all([
+    const [vencer, stock, despensaSql, menu] = await Promise.all([
       // FEFO: por producto, el lote vigente que vence primero; solo dentro de la alerta amarilla (HU-09)
       sql.query(
         `
@@ -2443,6 +2107,16 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
       ),
       sql.query(
         `
+          SELECT nombre AS producto, unidad_medida, stock_actual AS cantidad
+          FROM producto
+          WHERE stock_actual > 0
+            AND NOT (categoria = ANY($1))
+          ORDER BY nombre
+        `,
+        [CATEGORIAS_NO_ALIMENTARIAS]
+      ),
+      sql.query(
+        `
           SELECT r.id, r.nombre_plato, r.porciones, r.rubro,
                  COALESCE(
                    json_agg(
@@ -2463,6 +2137,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     ]);
     proximosAVencer = vencer.rows;
     mayorStock = stock.rows;
+    despensaFilas = despensaSql.rows;
     recetasMenu = menu.rows.map((fila: any) => ({
       ...fila,
       id: Number(fila.id),
@@ -2500,12 +2175,30 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     })),
   };
 
-  const porVencer = new Map(proximosAVencer.map((item) => [normalizarTexto(String(item.producto)), String(item.producto)]));
+  const aInsumo = (fila: any, porVencerFlag: boolean, dias: number | null, cantidad: number): InsumoCocina => ({
+    producto: String(fila.producto),
+    unidad_medida: String(fila.unidad_medida || 'un'),
+    cantidad_en_riesgo: cantidad,
+    dias_para_vencer: dias,
+    por_vencer: porVencerFlag,
+  });
+  const porVencerMarcados = proximosAVencer.map((fila) =>
+    aInsumo(fila, true, Number(fila.dias_para_vencer), Number(fila.cantidad_en_riesgo))
+  );
+  const clavesPorVencer = new Set(porVencerMarcados.map((item) => normalizarTexto(item.producto)));
+  const despensa = despensaFilas
+    .filter((fila) => {
+      const nombre = normalizarTexto(String(fila.producto));
+      return nombre && !clavesPorVencer.has(nombre) && !/prueba/.test(nombre);
+    })
+    .map((fila) => aInsumo(fila, false, null, Number(fila.cantidad)));
+  const inventario = [...porVencerMarcados, ...despensa];
+  const porNombre = new Map(inventario.map((item) => [normalizarTexto(item.producto), item.producto]));
   const resolverInsumo = (texto: unknown) => {
     const buscado = normalizarTexto(String(texto ?? ''));
     if (!buscado) return null;
-    if (porVencer.has(buscado)) return porVencer.get(buscado) as string;
-    const coincidencias = [...porVencer.entries()].filter(([clave]) => clave.includes(buscado) || buscado.includes(clave));
+    if (porNombre.has(buscado)) return porNombre.get(buscado) as string;
+    const coincidencias = [...porNombre.entries()].filter(([clave]) => clave.includes(buscado) || buscado.includes(clave));
     return coincidencias.length === 1 ? coincidencias[0][1] : null;
   };
 
@@ -2517,69 +2210,60 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     modelo: null,
     categoria_restaurante: categoriaRestaurante,
     contexto,
-    sugerencias: armarSugerenciasLocales(categoriaRestaurante, proximosAVencer, recetasMenu),
+    sugerencias: armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa),
     generado_en_ms: Date.now() - inicio,
     mensaje,
   });
 
-  if (!proximosAVencer.some((item) => !esInsumoDeVenta(String(item.producto)))) {
-    return c.json(respaldoLocal('Estos insumos se venden en su envase. No se arma una receta con ellos.'));
-  }
-
   if (!c.env.AI?.run) {
-    return c.json(respaldoLocal('La IA no está disponible. Se muestran las recetas guardadas de este rubro.'));
+    return c.json(respaldoLocal('La IA no está disponible. Se muestran recetas armadas con lo que vence y con la despensa.'));
   }
 
-  const nombresRiesgo = new Set(
-    proximosAVencer
-      .filter((item) => !esInsumoDeVenta(String(item.producto)))
-      .map((item) => normalizarTexto(String(item.producto)))
-  );
   const menuParaModelo = recetasMenu
-    .filter((receta) => receta.ingredientes.some((ing: any) => nombresRiesgo.has(normalizarTexto(String(ing.producto)))))
+    .filter((receta) => receta.ingredientes.some((ing: any) => clavesPorVencer.has(normalizarTexto(String(ing.producto)))))
     .slice(0, 8)
     .map((receta) => ({
       receta_id: receta.id,
       plato: receta.nombre_plato,
       insumos: receta.ingredientes.map((ing: any) => ing.producto),
     }));
-  const claveCache = `v5|${categoriaRestaurante}|${listado.proximos_a_vencer
+  const claveCache = `v7|${categoriaRestaurante}|${listado.proximos_a_vencer
     .map((item) => `${item.insumo}:${item.vence_en_dias}:${item.cantidad_disponible}`)
-    .join(',')}`;
+    .join(',')}|${despensa.length}`;
 
   const generarConModelo = async () => {
     const mensajes = [
       {
         role: 'system',
         content:
-          `Eres el asistente de cocina de un restaurante de ${categoriaRestaurante} en Chile. ` +
-          'Sugiere 1 plato real de esa categoría para consumir primero los insumos que vencen. ' +
-          'Copia el nombre del insumo exactamente. No inventes ingredientes, ni escribas descripción ni pasos. ' +
-          'El aceite envasado (maravilla, oliva, vegetal u otro) se vende: nunca propongas fabricarlo, cocinarlo ni un plato que se llame aceite. No lo incluyas como ingrediente. ' +
-          'Si el único insumo por vencer es aceite, responde sugerencias vacías. ' +
-          'La harina, el azúcar y el arroz se miden en gramos, no en la bolsa entera. ' +
-          'El título es el nombre del plato, no la lista de envases. ' +
-          'Si el plato ya está en el menú, usa su receta_id; si no, usa 0. Responde en español de Chile.',
+          `Eres el chef de un restaurante de ${categoriaRestaurante} en Chile. ` +
+          'Arma hasta 3 recetas distintas de esa categoría. Cada una debe usar un insumo por vencer distinto. ' +
+          'Los demás ingredientes salen de la despensa y no tienen que estar por vencer. ' +
+          'Copia el nombre exacto del insumo. No inventes insumos que no estén en las listas. ' +
+          'En cada paso nombra el implemento (olla, sartén, cuchillo, bol, molde) y la cantidad exacta. No escribas "un poco" ni "el envase". ' +
+          'El título nombra el plato y solo menciona ingredientes que realmente usas. ' +
+          'No hagas un postre de crema si la categoría no es Repostería, salvo que la crema sea el único insumo por vencer. ' +
+          'El aceite se puede usar como ingrediente. No propongas un plato que se llame aceite ni fabricar aceite. ' +
+          'Escribe 4 a 6 pasos concretos. El tipo es receta. Si el plato no está en el menú, receta_id es 0. Responde en español de Chile.',
       },
       {
         role: 'user',
-        content: `Categoría: ${categoriaRestaurante}.\nMenú que usa esos insumos:\n${JSON.stringify(menuParaModelo)}\nInsumos por vencer:\n${JSON.stringify(listado.proximos_a_vencer.filter((item) => !esInsumoDeVenta(item.insumo)))}`,
+        content: `Categoría: ${categoriaRestaurante}.\nMenú de referencia:\n${JSON.stringify(menuParaModelo)}\nInsumos por vencer:\n${JSON.stringify(listado.proximos_a_vencer)}\nDespensa, se puede usar aunque no venza:\n${JSON.stringify(despensa.map((item) => item.producto))}`,
       },
     ];
-    const porId = new Map(recetasMenu.map((receta) => [receta.id, receta]));
 
     try {
       const respuesta = await c.env.AI.run(MODELO_IA, {
         messages: mensajes,
         response_format: { type: 'json_schema', json_schema: ESQUEMA_SUGERENCIAS },
-        max_tokens: 300,
-        temperature: 0.2,
+        max_tokens: 1400,
+        temperature: 0.4,
       });
 
       const cuerpo = typeof respuesta?.response === 'string' ? JSON.parse(respuesta.response) : respuesta?.response;
       let descartadas = 0;
       const sugerencias = (Array.isArray(cuerpo?.sugerencias) ? cuerpo.sugerencias : [])
-        .slice(0, 1)
+        .slice(0, 3)
         .map((sugerencia: any) => {
           const pedidos = new Map<string, number>();
           const desdeIngredientes = (Array.isArray(sugerencia?.ingredientes) ? sugerencia.ingredientes : [])
@@ -2596,69 +2280,33 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
             ].filter((nombre: string | null): nombre is string => Boolean(nombre))
           )];
           const titulo = typeof sugerencia?.titulo === 'string' ? sugerencia.titulo.trim() : '';
-          const preferencia = PREFERENCIA_CATEGORIA[categoriaRestaurante];
-          const hayAfines = proximosAVencer.some((item) => preferencia?.test(normalizarTexto(String(item.producto))));
-          if (!titulo || insumos.length === 0) {
+          const cerrada = cerrarSugerenciaModelo({
+            categoria: categoriaRestaurante,
+            titulo,
+            nombres: insumos,
+            pasos: sugerencia?.pasos,
+            pedidos,
+            insumos: inventario,
+            porVencer: porVencerMarcados,
+          });
+          if (!cerrada) {
             descartadas += 1;
             return null;
           }
-          // Si el modelo mete un insumo que no corresponde a la cocina, se saca ese insumo y se conserva el plato.
-          const insumosCocina = hayAfines
-            ? insumos.filter((nombre) => preferencia.test(normalizarTexto(nombre)))
-            : insumos;
-          if (insumosCocina.length === 0) {
-            descartadas += 1;
-            return null;
-          }
-          const receta = porId.get(Number(sugerencia?.receta_id));
-          const insumosDeLaReceta = receta
-            ? new Set(receta.ingredientes.map((ing: any) => normalizarTexto(String(ing.producto))))
-            : null;
-          const insumosFinales = (insumosDeLaReceta
-            ? insumosCocina.filter((nombre) => insumosDeLaReceta.has(normalizarTexto(nombre)))
-            : insumosCocina
-          ).filter((nombre) => !esInsumoDeVenta(nombre));
-          const tituloFinal = receta ? receta.nombre_plato : titulo;
-          if (/aceite/.test(normalizarTexto(tituloFinal))) {
-            descartadas += 1;
-            return null;
-          }
-          const medidos = ingredientesMedidos(insumosFinales, proximosAVencer, receta, pedidos);
-          const usados = new Set(medidos.map((ing) => normalizarTexto(ing.producto)));
-          const faltantes = receta ? [] : proximosAVencer
-            .filter((item) => {
-              const nombre = normalizarTexto(String(item.producto));
-              return !usados.has(nombre) && !esInsumoDeVenta(nombre) && preferencia?.test(nombre);
-            })
-            .slice(0, Math.max(0, 3 - medidos.length))
-            .map((item) => String(item.producto));
-          const ingredientes = [...medidos, ...ingredientesMedidos(faltantes, proximosAVencer)];
-          if (ingredientes.length === 0) {
-            descartadas += 1;
-            return null;
-          }
-          const tituloCocina = tituloFinal;
-          return {
-            tipo: sugerencia.tipo === 'promocion' ? 'promocion' : 'receta',
-            ...(receta ? { receta_id: receta.id } : {}),
-            titulo: tituloCocina,
-            descripcion: describirRescate(categoriaRestaurante, ingredientes.map((ing) => ing.producto), proximosAVencer),
-            insumos_usados: ingredientes.map((ing) => ing.producto),
-            ingredientes,
-            pasos: armarPasos(categoriaRestaurante, tituloCocina, ingredientes),
-          };
+          return cerrada;
         })
         .filter(Boolean);
 
+      const locales = armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa);
       const vistas = new Set<string>();
-      const unicas = sugerencias.filter((item: any) => {
+      const juntas = [...sugerencias, ...locales].filter((item) => {
         const clave = normalizarTexto(String(item?.titulo ?? ''));
         if (!clave || vistas.has(clave)) return false;
         vistas.add(clave);
         return true;
-      });
+      }).slice(0, 4);
 
-      if (unicas.length < 1) return { error: 'insuficientes' };
+      if (juntas.length < 1) return { error: 'insuficientes' };
 
       return {
         success: true,
@@ -2667,7 +2315,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
         generado_en_ms: Date.now() - inicio,
         categoria_restaurante: categoriaRestaurante,
         contexto,
-        sugerencias: unicas,
+        sugerencias: juntas,
         descartadas_por_alucinacion: descartadas,
       };
     } catch {
@@ -2675,7 +2323,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     }
   };
 
-  // Si el modelo no arma un plato, se responden las recetas guardadas del rubro.
+  // Si el modelo no arma una receta completa, se arma una con lo que vence y con la despensa.
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -2697,10 +2345,10 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
           cacheSugerenciasIa.set(claveCache, { vence: Date.now() + TTL_CACHE_IA_MS, cuerpo: ia });
           enviar({ ...ia, fase: 'final' });
         } else {
-          enviar({ ...respaldoLocal('La IA no generó un plato. Se muestran las recetas guardadas de este rubro.'), fase: 'final' });
+          enviar({ ...respaldoLocal('La IA no generó una receta completa. Se muestran recetas armadas con lo que vence y con la despensa.'), fase: 'final' });
         }
       } catch {
-        enviar({ ...respaldoLocal('La IA no generó un plato. Se muestran las recetas guardadas de este rubro.'), fase: 'final' });
+        enviar({ ...respaldoLocal('La IA no generó una receta completa. Se muestran recetas armadas con lo que vence y con la despensa.'), fase: 'final' });
       } finally {
         try { controller.close(); } catch { /* el cliente ya cerró el stream */ }
       }
