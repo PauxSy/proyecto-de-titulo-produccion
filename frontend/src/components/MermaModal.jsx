@@ -17,14 +17,12 @@ const IconoPapelera = () => (
   </svg>
 )
 
-function MermaModal({ lote, onClose, onRegistrada, modo = 'registrar' }) {
-  const solicitud = modo === 'solicitar'
+function MermaModal({ lote, onClose, onRegistrada }) {
   const disponible = Number(lote.cantidad_disponible)
 
   // Un lote caducado casi siempre se da de baja por vencimiento; se puede cambiar
   const [motivo, setMotivo] = useState(lote.vencido ? 'Vencimiento' : '')
   const [cantidad, setCantidad] = useState('')
-  const [observacion, setObservacion] = useState('')
   const [errores, setErrores] = useState({})
   const [errorEnvio, setErrorEnvio] = useState('')
   const [enviando, setEnviando] = useState(false)
@@ -49,9 +47,6 @@ function MermaModal({ lote, onClose, onRegistrada, modo = 'registrar' }) {
     } else if (n > disponible) {
       er.cantidad = `No puede superar el disponible del lote (${formatear(disponible)}).`
     }
-    if (solicitud && observacion.trim().length > 300) {
-      er.observacion = 'La observación admite hasta 300 caracteres.'
-    }
     return er
   }
 
@@ -71,23 +66,22 @@ function MermaModal({ lote, onClose, onRegistrada, modo = 'registrar' }) {
     try {
       // El usuario responsable NO va en el cuerpo: el backend lo toma del JWT,
       // que fetchConAuth envía en el header Authorization.
-      const res = await fetchConAuth(solicitud ? '/mermas/solicitudes' : '/mermas', {
+      const res = await fetchConAuth('/mermas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           lote_id: lote.id,
           cantidad: Number(cantidad),
           motivo,
-          ...(solicitud && observacion.trim() ? { observacion: observacion.trim() } : {}),
         }),
       })
       const data = await res.json().catch(() => ({}))
 
       if (!res.ok || !data.success) {
-        setErrorEnvio(data.error || (solicitud ? 'No se pudo enviar la solicitud.' : 'No se pudo registrar la merma. Intenta nuevamente.'))
+        setErrorEnvio(data.error || 'No se pudo registrar la merma. Intenta nuevamente.')
         return
       }
-      if (!solicitud) avisarInventarioActualizado()
+      avisarInventarioActualizado()
       onRegistrada(data.data)
     } catch {
       setErrorEnvio('Error de conexión con el servidor.')
@@ -108,8 +102,8 @@ function MermaModal({ lote, onClose, onRegistrada, modo = 'registrar' }) {
         <div className="gm-cabecera">
           <span className="gm-icono"><IconoPapelera /></span>
           <div className="gm-titulos">
-            <h3 id="gm-titulo">{solicitud ? 'Solicitar merma' : 'Registrar merma'}</h3>
-            <p>{solicitud ? 'Bodega o Administración deben aprobarla. El stock no cambia todavía.' : 'Descuenta stock físico y audita la pérdida'}</p>
+            <h3 id="gm-titulo">Registrar merma</h3>
+            <p>Descuenta stock físico y audita la pérdida</p>
           </div>
           <button type="button" className="gm-cerrar" onClick={cerrar} aria-label="Cerrar">
             ×
@@ -186,25 +180,6 @@ function MermaModal({ lote, onClose, onRegistrada, modo = 'registrar' }) {
               </select>
               {errores.motivo && <span className="gm-error-campo">{errores.motivo}</span>}
             </div>
-
-            {solicitud && (
-              <div className="gm-campo">
-                <label htmlFor="gm-observacion">Qué pasó</label>
-                <textarea
-                  id="gm-observacion"
-                  rows={3}
-                  maxLength={300}
-                  value={observacion}
-                  onChange={(e) => {
-                    setObservacion(e.target.value)
-                    setErrores((er) => ({ ...er, observacion: undefined }))
-                  }}
-                  placeholder="Ej. Se rompió la botella durante el servicio"
-                  className={errores.observacion ? 'gm-invalido' : ''}
-                />
-                {errores.observacion && <span className="gm-error-campo">{errores.observacion}</span>}
-              </div>
-            )}
           </div>
 
           {errorEnvio && <p className="error-msg">⚠️ {errorEnvio}</p>}
@@ -214,7 +189,7 @@ function MermaModal({ lote, onClose, onRegistrada, modo = 'registrar' }) {
               Cancelar
             </button>
             <button type="submit" className="gm-btn-confirmar" disabled={enviando}>
-              {enviando ? (solicitud ? 'Enviando...' : 'Registrando...') : (solicitud ? 'Enviar solicitud' : 'Confirmar Baja de Inventario')}
+              {enviando ? 'Registrando...' : 'Confirmar Baja de Inventario'}
             </button>
           </div>
         </form>

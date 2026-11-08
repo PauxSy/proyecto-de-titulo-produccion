@@ -12,8 +12,7 @@ const MOTIVOS = ['Vencimiento', 'Rotura/Daño', 'Deterioro', 'Error Operacional'
 const numero = (valor) => Number(valor).toLocaleString('es-CL', { maximumFractionDigits: 2 })
 const dinero = (valor) => Number(valor || 0).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 })
 
-export function RegistrarMerma({ modo = 'registrar' }) {
-  const solicitud = modo === 'solicitar'
+export function RegistrarMerma() {
   const [texto, setTexto] = useState('')
   const [productos, setProductos] = useState([])
   const [producto, setProducto] = useState(null)
@@ -79,12 +78,8 @@ export function RegistrarMerma({ modo = 'registrar' }) {
       <div className="card-header">
         <div className="icon-badge">🗑️</div>
         <div>
-          <h1>{solicitud ? 'Solicitar merma' : 'Registrar merma'}</h1>
-          <p className="subtitle">
-            {solicitud
-              ? 'Avisa a Bodega o Administración. El stock no cambia hasta que aprueben.'
-              : 'Elige el lote y la causa. No puede superar lo disponible.'}
-          </p>
+          <h1>Registrar merma</h1>
+          <p className="subtitle">Elige el lote y la causa. No puede superar lo disponible.</p>
         </div>
       </div>
 
@@ -135,7 +130,7 @@ export function RegistrarMerma({ modo = 'registrar' }) {
                   <span className="codigo"> vence {lote.fecha_vencimiento} · disp. {numero(lote.cantidad_disponible)}</span>
                 </div>
                 <button type="button" className="btn-mini btn-mini-outline" onClick={() => setLoteMerma(lote)}>
-                  {solicitud ? 'Solicitar' : 'Dar merma'}
+                  Dar merma
                 </button>
               </li>
             ))}
@@ -146,14 +141,11 @@ export function RegistrarMerma({ modo = 'registrar' }) {
       {loteMerma && (
         <MermaModal
           lote={loteMerma}
-          modo={modo}
           onClose={() => setLoteMerma(null)}
           onRegistrada={() => {
             setLoteMerma(null)
-            setAviso(solicitud
-              ? `Solicitud enviada para ${loteMerma.numero_lote}. El stock sigue igual hasta que la aprueben.`
-              : `Merma registrada en ${loteMerma.numero_lote}.`)
-            if (!solicitud) elegirProducto(producto, { conservarAviso: true })
+            setAviso(`Merma registrada en ${loteMerma.numero_lote}.`)
+            elegirProducto(producto, { conservarAviso: true })
           }}
         />
       )}

@@ -101,8 +101,7 @@ export const consultaInventario = async (c: Context, next: Next) => {
   await next();
 };
 
-// HU-10: Chef, Bodeguero y Administrador descuentan stock al registrar la merma.
-// El Chef también puede dejar una solicitud (POST /mermas/solicitudes) si quiere que la revisen.
+// HU-10: Chef, Bodeguero y Administrador registran la merma de forma directa, sin autorización previa.
 export const registrarMerma = async (c: Context, next: Next) => {
   const usuario = await obtenerUsuarioDesdeToken(c);
   if (usuario instanceof Response) return usuario;
