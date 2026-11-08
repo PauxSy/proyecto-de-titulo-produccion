@@ -16,13 +16,14 @@ recetas.use('*', soloChefOAdministrador);
 const UNIDADES = ['gr', 'ml', 'un'];
 const REGEX_NOMBRE_PLATO = /^[\p{L}\p{N}\s'".,()&/-]{2,150}$/u;
 const REGEX_RUBRO = /^[\p{L}\p{N}\s'.,()&/-]{2,100}$/u;
-const LIMITES = { porcionesMaximo: 1000, ingredientesMaximo: 50, cantidadMaxima: 100000, busquedaMaxima: 100 };
+const LIMITES = { porcionesMaximo: 1000, ingredientesMaximo: 50, cantidadMaxima: 100000, busquedaMaxima: 100, instruccionesMinimo: 80, instruccionesMaximo: 2500, pasosMinimos: 4 };
 
 const ERRORES = {
   nombre_plato: 'nombre_plato debe tener entre 2 y 150 caracteres (letras, números, espacios y puntuación básica)',
   rubro: 'rubro debe tener entre 2 y 100 caracteres (letras, números, espacios y puntuación básica)',
   porciones: `porciones debe ser un número entero entre 1 y ${LIMITES.porcionesMaximo}`,
   ingredientes: `ingredientes debe ser una lista de 1 a ${LIMITES.ingredientesMaximo} elementos { producto_id, cantidad_requerida, unidad_medida }`,
+  instrucciones: `Las instrucciones deben tener entre ${LIMITES.instruccionesMinimo} y ${LIMITES.instruccionesMaximo} caracteres, con al menos ${LIMITES.pasosMinimos} pasos, uno por línea`,
   nombre_duplicado: 'Ya existe una receta activa con ese nombre',
 };
 
@@ -59,8 +60,23 @@ const validarIngredientes = (valor: unknown): Ingrediente[] | string => {
 };
 
 // Valida los campos de texto/número presentes en el body; `obligatorios` exige los tres (POST)
+const leerInstrucciones = (valor: unknown, obligatorio: boolean) => {
+  if (valor === undefined) return { instrucciones: undefined as string | undefined };
+  const texto = typeof valor === 'string' ? valor.replace(/\r\n/g, '\n').trim() : '';
+  if (!texto) {
+    return obligatorio
+      ? { error: ERRORES.instrucciones }
+      : { instrucciones: undefined as string | undefined };
+  }
+  const pasos = texto.split('\n').map((linea) => linea.trim()).filter(Boolean);
+  if (texto.length < LIMITES.instruccionesMinimo || texto.length > LIMITES.instruccionesMaximo || pasos.length < LIMITES.pasosMinimos) {
+    return { error: ERRORES.instrucciones };
+  }
+  return { instrucciones: pasos.join('\n') };
+};
+
 const validarDatos = (body: Record<string, unknown>, obligatorios: boolean) => {
-  const datos: { nombre_plato?: string; rubro?: string; porciones?: number } = {};
+  const datos: { nombre_plato?: string; rubro?: string; porciones?: number; instrucciones?: string } = {};
   for (const campo of ['nombre_plato', 'rubro'] as const) {
     if (body[campo] === undefined) {
       if (obligatorios) return { error: ERRORES[campo] };
@@ -77,6 +93,9 @@ const validarDatos = (body: Record<string, unknown>, obligatorios: boolean) => {
     if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > LIMITES.porcionesMaximo) return { error: ERRORES.porciones };
     datos.porciones = p;
   }
+  const instrucciones = leerInstrucciones(body.instrucciones, obligatorios);
+  if (instrucciones.error) return { error: instrucciones.error };
+  if (instrucciones.instrucciones !== undefined) datos.instrucciones = instrucciones.instrucciones;
   return { datos };
 };
 
@@ -101,7 +120,7 @@ const insertarIngredientes = (client: any, recetaId: number, ingredientes: Ingre
 const obtenerFicha = async (db: any, id: number) => {
   const receta = await db.query(
     `
-      SELECT r.id, r.nombre_plato, r.porciones, r.rubro, r.estado,
+      SELECT r.id, r.nombre_plato, r.porciones, r.rubro, r.estado, r.instrucciones,
              (SELECT COUNT(*)::int FROM movimiento WHERE id_receta = r.id) AS salidas_por_comanda
       FROM receta r WHERE r.id = $1
     `,
@@ -199,8 +218,8 @@ recetas.post('/', async (c) => {
     }
 
     const creada = await client.query(
-      `INSERT INTO receta (nombre_plato, porciones, rubro) VALUES ($1, $2, $3) RETURNING id`,
-      [datos!.nombre_plato, datos!.porciones, datos!.rubro]
+      `INSERT INTO receta (nombre_plato, porciones, rubro, instrucciones) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [datos!.nombre_plato, datos!.porciones, datos!.rubro, datos!.instrucciones]
     );
     const id = creada.rows[0].id;
     await insertarIngredientes(client, id, ingredientes);
@@ -229,7 +248,7 @@ recetas.put('/:id', async (c) => {
   const ingredientes = cambiaIngredientes ? validarIngredientes(body.ingredientes) : [];
   if (typeof ingredientes === 'string') return c.json({ success: false, error: ingredientes }, 400);
   if (Object.keys(datos!).length === 0 && !cambiaIngredientes) {
-    return c.json({ success: false, error: 'Debe enviar al menos un campo: nombre_plato, porciones, rubro o ingredientes' }, 400);
+    return c.json({ success: false, error: 'Debe enviar al menos un campo: nombre_plato, porciones, rubro, instrucciones o ingredientes' }, 400);
   }
 
   const client = await getDb(c.env.DATABASE_URL).connect();
@@ -249,7 +268,7 @@ recetas.put('/:id', async (c) => {
         await client.query('ROLLBACK');
         return c.json({
           success: false,
-          error: 'La receta ya se usó en comandas: solo se pueden modificar nombre_plato, porciones y rubro. Para cambiar los ingredientes cree una receta nueva y desactive esta.',
+          error: 'La receta ya se usó en comandas: solo se pueden modificar nombre, porciones, rubro e instrucciones. Para cambiar los ingredientes cree una receta nueva y desactive esta.',
           salidas_por_comanda: usos.rows[0].total,
         }, 409);
       }
@@ -265,10 +284,11 @@ recetas.put('/:id', async (c) => {
         UPDATE receta
         SET nombre_plato = COALESCE($2, nombre_plato),
             porciones = COALESCE($3, porciones),
-            rubro = COALESCE($4, rubro)
+            rubro = COALESCE($4, rubro),
+            instrucciones = COALESCE($5, instrucciones)
         WHERE id = $1
       `,
-      [id, datos!.nombre_plato ?? null, datos!.porciones ?? null, datos!.rubro ?? null]
+      [id, datos!.nombre_plato ?? null, datos!.porciones ?? null, datos!.rubro ?? null, datos!.instrucciones ?? null]
     );
     if (cambiaIngredientes) {
       await client.query('DELETE FROM ingrediente_receta WHERE id_receta = $1', [id]);

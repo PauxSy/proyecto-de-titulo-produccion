@@ -16,6 +16,7 @@ const formularioVacio = () => ({
   nombre: '',
   rubro: '',
   porciones: '1',
+  instrucciones: '',
   usada: false,
   salidas: 0,
   filas: [filaVacia()],
@@ -28,6 +29,10 @@ function RecetasCocina() {
   const [aviso, setAviso] = useState('')
   const [guardando, setGuardando] = useState(false)
   const [cargando, setCargando] = useState(true)
+  const [vista, setVista] = useState(null)
+  const [abriendoVista, setAbriendoVista] = useState(false)
+
+  const cerrarVista = () => setVista(null)
 
   const cargar = useCallback(async () => {
     try {
@@ -48,6 +53,15 @@ function RecetasCocina() {
   useEffect(() => {
     cargar()
   }, [cargar])
+
+  useEffect(() => {
+    if (!vista) return undefined
+    const alTeclar = (evento) => {
+      if (evento.key === 'Escape') cerrarVista()
+    }
+    window.addEventListener('keydown', alTeclar)
+    return () => window.removeEventListener('keydown', alTeclar)
+  }, [vista])
 
   const actualizarFila = (clave, cambios) => {
     setForm((actual) => ({
@@ -72,6 +86,7 @@ function RecetasCocina() {
         nombre: ficha.nombre_plato,
         rubro: ficha.rubro,
         porciones: String(ficha.porciones),
+        instrucciones: ficha.instrucciones || '',
         usada: Boolean(ficha.usada_en_comandas),
         salidas: ficha.salidas_por_comanda,
         filas: ficha.ingredientes.map((ing) => ({
@@ -94,6 +109,11 @@ function RecetasCocina() {
     const porciones = Number(form.porciones)
     if (!Number.isInteger(porciones) || porciones < 1) {
       setError('Las porciones deben ser un número entero mayor a 0.')
+      return false
+    }
+    const pasos = form.instrucciones.split('\n').map((linea) => linea.trim()).filter(Boolean)
+    if (form.instrucciones.trim().length < 80 || pasos.length < 4) {
+      setError('Escribe al menos 4 pasos de preparación, uno por línea, con el detalle de cómo se cocina.')
       return false
     }
     if (form.usada) return true
@@ -135,6 +155,7 @@ function RecetasCocina() {
       nombre_plato: form.nombre.trim(),
       rubro: form.rubro.trim(),
       porciones: Number(form.porciones),
+      instrucciones: form.instrucciones.trim(),
     }
     if (!form.usada) {
       cuerpo.ingredientes = form.filas.map((fila) => ({
@@ -163,6 +184,25 @@ function RecetasCocina() {
       setError('Error de conexión con el servidor.')
     } finally {
       setGuardando(false)
+    }
+  }
+
+  const visualizar = async (id) => {
+    setError('')
+    setAviso('')
+    setAbriendoVista(true)
+    try {
+      const res = await fetchConAuth(`/recetas/${id}`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) {
+        setError(data.error || 'No se pudo visualizar la receta.')
+        return
+      }
+      setVista(data.data)
+    } catch {
+      setError('Error de conexión con el servidor.')
+    } finally {
+      setAbriendoVista(false)
     }
   }
 
@@ -221,6 +261,14 @@ function RecetasCocina() {
                   </div>
                 </div>
                 <div className="fila-acciones">
+                  <button
+                    type="button"
+                    className="btn-mini"
+                    disabled={abriendoVista}
+                    onClick={() => visualizar(receta.id)}
+                  >
+                    Visualizar
+                  </button>
                   <button type="button" className="btn-mini btn-mini-outline" onClick={() => abrirEdicion(receta.id)}>
                     Editar
                   </button>
@@ -246,7 +294,7 @@ function RecetasCocina() {
           <div className="icon-badge">✏️</div>
           <div>
             <h1>{form.id ? 'Editar receta' : 'Nueva receta'}</h1>
-            <p className="subtitle">Las unidades de cada fila son gr, ml o un</p>
+            <p className="subtitle">Cantidades en gr, ml o un, y los pasos de preparación uno por línea</p>
           </div>
         </div>
 
@@ -254,7 +302,7 @@ function RecetasCocina() {
         {aviso && <div className="exito-msg">{aviso}</div>}
         {form.usada && (
           <div className="exito-msg">
-            Esta receta ya se usó en comandas ({form.salidas}). Puedes cambiar el nombre, el rubro y las porciones. Los ingredientes quedan fijos para no alterar el historial.
+            Esta receta ya se usó en comandas ({form.salidas}). Puedes cambiar el nombre, el rubro, las porciones y las instrucciones. Los ingredientes quedan fijos para no alterar el historial.
           </div>
         )}
 
@@ -279,6 +327,18 @@ function RecetasCocina() {
               value={form.porciones}
               onChange={(e) => setForm({ ...form, porciones: e.target.value })}
             />
+          </div>
+
+          <div className="campo" style={{ marginBottom: 16 }}>
+            <label htmlFor="instrucciones">Instrucciones de preparación *</label>
+            <textarea
+              id="instrucciones"
+              rows={8}
+              value={form.instrucciones}
+              placeholder={'Lava y corta los ingredientes.\nCocina a fuego medio el tiempo indicado.\nRevisa el punto antes de retirar.\nReparte en las porciones y sirve.'}
+              onChange={(e) => setForm({ ...form, instrucciones: e.target.value })}
+            />
+            <span className="hint">Un paso por línea. Incluye tiempos, fuego y cómo se arma el plato.</span>
           </div>
 
           <div className="campo" style={{ marginBottom: 8 }}>
@@ -355,6 +415,48 @@ function RecetasCocina() {
           )}
         </form>
       </section>
+
+      {vista && (
+        <div className="gu-overlay" onMouseDown={cerrarVista}>
+          <div
+            className="gu-modal gu-modal-receta"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-receta-vista"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="gu-modal-cabecera">
+              <div>
+                <h3 id="titulo-receta-vista">{vista.nombre_plato}</h3>
+                <p>{vista.rubro || 'Sin rubro'} · {vista.porciones} porción(es) · {vista.estado === 'activo' ? 'Activa' : 'Inactiva'}</p>
+              </div>
+              <button type="button" className="gu-modal-cerrar" onClick={cerrarVista} aria-label="Cerrar">×</button>
+            </div>
+            <h4 className="subtitulo-seccion">Ingredientes</h4>
+            {(vista.ingredientes || []).length === 0 ? (
+              <p className="hint">Esta receta no tiene ingredientes guardados.</p>
+            ) : (
+              <ul className="receta-instrucciones">
+                {(vista.ingredientes || []).map((ing) => (
+                  <li key={ing.producto_id}>
+                    {new Intl.NumberFormat('es-CL', { maximumFractionDigits: 2 }).format(Number(ing.cantidad_requerida))} {ing.unidad_medida} de {ing.producto}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <h4 className="subtitulo-seccion">Preparación</h4>
+            {String(vista.instrucciones || '').trim() ? (
+              <ol className="receta-instrucciones">
+                {String(vista.instrucciones).split('\n').map((paso) => paso.trim()).filter(Boolean).map((paso, indice) => (
+                  <li key={`${indice}-${paso.slice(0, 24)}`}>{paso}</li>
+                ))}
+              </ol>
+            ) : (
+              <p className="hint">Esta receta todavía no tiene pasos de preparación.</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

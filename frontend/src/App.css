@@ -509,6 +509,24 @@ body {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
 }
 
+.campo textarea {
+  width: 100%;
+  border: 1px solid #d7dce3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: #0f172a;
+  outline: none;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.campo textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
 .lote-numero {
   display: flex;
   align-items: stretch;
@@ -1062,6 +1080,10 @@ body {
   justify-content: center;
   padding: 20px;
   z-index: 200;
+}
+
+.gu-modal.gu-modal-receta {
+  max-width: 640px;
 }
 
 .gu-modal {
@@ -2633,6 +2655,17 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   border-top: 1px solid #f1f5f9;
+}
+
+.receta-instrucciones {
+  margin: 0;
+  padding-left: 22px;
+  color: #334155;
+}
+
+.receta-instrucciones li {
+  margin: 0 0 10px;
+  line-height: 1.45;
 }
 
 .sugerencia-lista {

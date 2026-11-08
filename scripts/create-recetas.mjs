@@ -12,7 +12,8 @@ try {
       nombre_plato VARCHAR(150) NOT NULL,
       porciones INTEGER NOT NULL CHECK (porciones > 0),
       rubro VARCHAR(100) NOT NULL,
-      estado VARCHAR(20) NOT NULL DEFAULT 'activo' CHECK (estado IN ('activo', 'inactivo'))
+      estado VARCHAR(20) NOT NULL DEFAULT 'activo' CHECK (estado IN ('activo', 'inactivo')),
+      instrucciones TEXT NOT NULL DEFAULT ''
     );
   `);
   await p.query(`
@@ -26,6 +27,7 @@ try {
   `);
 
   // Si las tablas ya existían, se ajustan a las mismas reglas (falla si hay filas que no las cumplen).
+  await p.query(`ALTER TABLE receta ADD COLUMN IF NOT EXISTS instrucciones TEXT NOT NULL DEFAULT '';`);
   await p.query(`UPDATE receta SET estado = 'activo' WHERE estado IS NULL;`);
   await p.query(`ALTER TABLE receta ALTER COLUMN estado SET NOT NULL;`);
   await p.query(`
