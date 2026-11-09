@@ -775,6 +775,31 @@ body {
   border: 1px solid #e5e7eb;
 }
 
+.btn-aplicar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  margin: 12px 0 4px;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.28);
+}
+
+.btn-aplicar:hover {
+  background: #1d4ed8;
+}
+
+.btn-aplicar:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 @media (max-width: 480px) {
   .grid {
     grid-template-columns: 1fr;
@@ -2593,6 +2618,54 @@ body {
   color: #1d4ed8;
 }
 
+.chef-ia-cargando-bloque {
+  padding: 24px 16px;
+  margin-bottom: 8px;
+}
+
+.btn-chef-ia-cargando {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 168px;
+  justify-content: center;
+}
+
+.chef-ia-spinner-mini {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: btn-girar 0.8s linear infinite;
+}
+
+.sugerencia-card-ia {
+  border-color: #c4b5fd;
+  box-shadow: 0 10px 30px rgba(124, 58, 237, 0.08);
+}
+
+.sugerencia-card-ia::before {
+  background: linear-gradient(90deg, #7c3aed, #2563eb);
+}
+
+.sugerencia-card-cargando {
+  min-height: 240px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
+}
+
+.sugerencia-card-cargando .chef-ia-spinner {
+  width: 28px;
+  height: 28px;
+}
+
+.sugerencia-card-cargando .hint {
+  margin: 0;
+}
+
 .chef-ia-spinner {
   width: 36px;
   height: 36px;
@@ -2602,11 +2675,32 @@ body {
   animation: btn-girar 0.8s linear infinite;
 }
 
+.chef-ia-columnas {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.15fr);
+  gap: 24px 28px;
+  align-items: start;
+}
+
+.chef-ia-col .subtitulo-seccion {
+  margin-top: 8px;
+}
+
+.chef-ia-col .sugerencias-chef {
+  grid-template-columns: 1fr;
+}
+
 .sugerencias-chef {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 24px;
   margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  .chef-ia-columnas {
+    grid-template-columns: 1fr;
+  }
 }
 
 .sugerencia-card {

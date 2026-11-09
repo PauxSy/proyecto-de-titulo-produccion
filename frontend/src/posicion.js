@@ -37,7 +37,11 @@ export const elegirGuardado = (clave, permitidos, respaldo) => {
 }
 
 const recetaValida = (datos) => (
-  Boolean(datos && typeof datos === 'object' && Array.isArray(datos.sugerencias))
+  Boolean(datos && typeof datos === 'object' && (
+    Array.isArray(datos.sugerencias)
+    || Array.isArray(datos.sugerencias_chef)
+    || Array.isArray(datos.sugerencias_ia)
+  ))
 )
 
 export const guardarRecetaIa = (datos) => {

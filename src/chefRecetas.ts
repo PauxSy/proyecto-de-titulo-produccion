@@ -32,6 +32,7 @@ const PREFERENCIA_CATEGORIA: Record<string, RegExp> = {
 };
 
 const CATEGORIAS_SALADAS = ['Comida Italiana', 'Comida Rápida', 'Comida Tailandesa', 'Comida Chilena', 'Comida China'];
+const DULCES_FUERA_DE_REPOSTERIA = /cacao|chocolate|manjar|colorante|vainilla|mermelada|mazapan|confite/;
 
 export const normalizarTexto = (texto: string) => texto.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
 
@@ -56,6 +57,19 @@ const rolInsumo = (nombre: string): RolInsumo => {
   if (/pollo|carne|cerdo|pescado|camaron|huevo|tofu|jamon/.test(texto)) return 'proteina';
   if (/leche|crema|queso|mantequilla|margarina|manteca|manjar|yogurt/.test(texto)) return 'lacteo';
   return 'otro';
+};
+
+export const encajaEnCategoria = (nombre: string, categoria: string) => {
+  const texto = normalizarTexto(nombre);
+  if (CATEGORIAS_SALADAS.includes(categoria) && DULCES_FUERA_DE_REPOSTERIA.test(texto)) return false;
+  if (categoria === 'Repostería' && /soya|aji|jengibre|repollo|pescado/.test(texto) && !/limon/.test(texto)) return false;
+  const preferencia = PREFERENCIA_CATEGORIA[categoria];
+  if (preferencia?.test(texto)) return true;
+  const rol = rolInsumo(nombre);
+  if (CATEGORIAS_SALADAS.includes(categoria)) {
+    return rol === 'picable' || rol === 'proteina' || /arroz|fideo|pasta|tomate|cebolla|ajo|aceite/.test(texto);
+  }
+  return rol !== 'aceite';
 };
 
 const formatearCantidad = (cantidad: number) =>
@@ -412,61 +426,171 @@ const armarDesdePlantilla = (categoria: string, heroe: InsumoCocina, despensa: I
   return publicar(categoria, titulo, nombres, mejor.plantilla.pasos(titulo, ingredientes), universo);
 };
 
-const completarGenerico = (categoria: string, heroe: InsumoCocina, despensa: InsumoCocina[]) => {
-  const preferencia = PREFERENCIA_CATEGORIA[categoria];
-  const basicos = [/aceite/, /(^|\s)sal fina|(^|\s)sal de mesa/, /azucar granulada/, /huevo/, /mantequilla sin sal|mantequilla/]
-    .map((patron) => buscarInsumo(despensa, patron))
-    .filter((item): item is InsumoCocina => item !== null);
-  const afines = despensa
-    .filter((item) => preferencia?.test(normalizarTexto(item.producto)))
-    .filter((item) => rolInsumo(item.producto) !== 'lacteo' || categoria === 'Repostería');
-  const apoyo = unicos([...basicos, ...afines])
-    .filter((item) => normalizarTexto(item.producto) !== normalizarTexto(heroe.producto))
-    .slice(0, 3);
-  const universo = unicos([heroe, ...apoyo]);
-  const rol = rolInsumo(heroe.producto);
-  const titulo = rol === 'picable'
-    ? `${cortoInsumo(heroe.producto)} salteado`
-    : `Preparación de ${cortoInsumo(heroe.producto)}`;
-  const nombres = universo.map((item) => item.producto);
+type EstiloCategoria = {
+  titulo: string;
+  extras: RegExp[];
+  implementos: string;
+  pasos: (titulo: string, ingredientes: IngredienteMedido[]) => string[];
+};
+
+const pasosPlato = (titulo: string, ingredientes: IngredienteMedido[], cuerpo: string[]) => [
+  `Reúne ${ingredientes.map(textoInsumo).join('; ')}.`,
+  ...cuerpo,
+  `Sirve ${titulo}.`,
+];
+
+const ESTILOS_CATEGORIA: Record<string, EstiloCategoria[]> = {
+  'Comida China': [
+    { titulo: 'Arroz frito cantonés', extras: [/arroz/, /huevo/, /aceite/, /cebolla|ajo|soya/], implementos: 'wok y cuchara', pasos: (t, i) => pasosPlato(t, i, ['Calienta el wok a fuego alto.', 'Revuelve el huevo, suma el arroz y saltea 5 minutos.']) },
+    { titulo: 'Chow mein', extras: [/harina|arroz|fideo/, /aceite/, /soya|ajo|cebolla/, /huevo/], implementos: 'olla, wok y tenedor', pasos: (t, i) => pasosPlato(t, i, ['Hierve la masa o el fideo 4 minutos y escurre.', 'Saltea en el wok 3 minutos con salsa de soya.']) },
+    { titulo: 'Pollo kung pao', extras: [/pollo|huevo/, /aceite/, /aji|soya|ajo/, /almendra|mani|nuez/], implementos: 'wok y cuchillo', pasos: (t, i) => pasosPlato(t, i, ['Dora la proteína a fuego alto.', 'Agrega el resto y cocina 6 minutos, hasta que brille.']) },
+    { titulo: 'Chop suey de verduras', extras: [/aceite/, /tomate|cebolla|repollo|aji/, /soya|ajo/], implementos: 'wok y espátula', pasos: (t, i) => pasosPlato(t, i, ['Saltea las verduras 4 minutos a fuego alto.', 'Termina con un chorrito de soya.']) },
+    { titulo: 'Fideos salteados al wok', extras: [/harina|fideo|arroz/, /aceite/, /huevo/, /soya|ajo/], implementos: 'olla y wok', pasos: (t, i) => pasosPlato(t, i, ['Cocina el fideo al dente.', 'Saltea 3 minutos con el resto de insumos.']) },
+    { titulo: 'Sopa wantán exprés', extras: [/harina/, /huevo/, /aceite/, /cebolla|ajo|soya/], implementos: 'olla y cuchara', pasos: (t, i) => pasosPlato(t, i, ['Arma tiras o wantanes con la masa.', 'Hierve 6 minutos en caldo suave.']) },
+    { titulo: 'Pollo agridulce', extras: [/pollo|huevo/, /aceite/, /tomate|aji/, /azucar granulada|soya/], implementos: 'sartén y cuchara', pasos: (t, i) => pasosPlato(t, i, ['Dora la proteína.', 'Reduce la salsa agridulce 5 minutos y napar.']) },
+    { titulo: 'Rollitos de primavera a la sartén', extras: [/harina/, /aceite/, /huevo/, /cebolla|repollo|zanahoria/], implementos: 'sartén y tabla', pasos: (t, i) => pasosPlato(t, i, ['Arma rollos delgados con la masa.', 'Dora 2 minutos por lado.']) },
+    { titulo: 'Salteado de ajo y jengibre', extras: [/aceite/, /ajo|jengibre|cebolla/, /pollo|huevo|tomate/], implementos: 'wok y cuchillo', pasos: (t, i) => pasosPlato(t, i, ['Perfuma el aceite con ajo o jengibre.', 'Saltea 5 minutos a fuego alto.']) },
+    { titulo: 'Huevos al estilo fu yung', extras: [/huevo/, /aceite/, /cebolla|tomate/, /soya/], implementos: 'sartén y palillos', pasos: (t, i) => pasosPlato(t, i, ['Bate los huevos.', 'Cocina como tortilla abierta 3 minutos por lado.']) },
+  ],
+  'Comida Italiana': [
+    { titulo: 'Spaghetti al pomodoro', extras: [/harina|fideo|pasta/, /tomate/, /aceite/, /ajo|oregano|queso/], implementos: 'olla y sartén', pasos: (t, i) => pasosPlato(t, i, ['Cocina la pasta al dente.', 'Reduce el tomate 10 minutos y mezcla.']) },
+    { titulo: 'Pasta aglio e olio', extras: [/harina|fideo|pasta/, /aceite/, /ajo/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'olla y sartén', pasos: (t, i) => pasosPlato(t, i, ['Dora el ajo en aceite sin quemar.', 'Saltea la pasta 2 minutos en esa grasa.']) },
+    { titulo: 'Fettuccine alfredo', extras: [/harina|fideo|pasta/, /crema|leche/, /queso|mantequilla/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'olla y sartén', pasos: (t, i) => pasosPlato(t, i, ['Reduce la crema 4 minutos.', 'Emulsiona con la pasta y el queso.']) },
+    { titulo: 'Lasagna exprés', extras: [/harina/, /tomate/, /queso|leche/, /huevo/], implementos: 'fuente y horno', pasos: (t, i) => pasosPlato(t, i, ['Arma capas de masa, salsa y queso.', 'Hornea 20 minutos a 180 °C.']) },
+    { titulo: 'Risotto rápido', extras: [/arroz|harina/, /cebolla|ajo/, /queso|crema|mantequilla/, /tomate/], implementos: 'olla ancha', pasos: (t, i) => pasosPlato(t, i, ['Sofríe la base y suma el arroz.', 'Remueve 12 minutos hasta que quede cremoso.']) },
+    { titulo: 'Bruschetta de tomate', extras: [/tomate/, /aceite/, /ajo|albahaca|oregano/, /harina/], implementos: 'tabla, cuchillo y horno', pasos: (t, i) => pasosPlato(t, i, ['Pica el tomate y mézclalo con aceite.', 'Tuéstate la base y cubre al momento.']) },
+    { titulo: 'Pizza rápida al sartén', extras: [/harina/, /tomate/, /queso/, /aceite|oregano/], implementos: 'sartén y horno', pasos: (t, i) => pasosPlato(t, i, ['Estira una masa delgada.', 'Cubre y cocina 8 minutos tapada.']) },
+    { titulo: 'Ensalada caprese', extras: [/tomate/, /queso/, /aceite/, /albahaca|oregano/], implementos: 'tabla y plato', pasos: (t, i) => pasosPlato(t, i, ['Lamina tomate y queso.', 'Rocía aceite y sirve fresco.']) },
+    { titulo: 'Sopa minestrone', extras: [/tomate/, /cebolla|ajo|zanahoria/, /harina|fideo|arroz/, /aceite/], implementos: 'olla y cuchara', pasos: (t, i) => pasosPlato(t, i, ['Sofríe verduras.', 'Cubre con agua y cocina 15 minutos.']) },
+    { titulo: 'Ñoquis a la sartén', extras: [/harina/, /huevo/, /papa|tomate|queso/, /aceite/], implementos: 'olla y sartén', pasos: (t, i) => pasosPlato(t, i, ['Forma ñoquis y hiérvelos hasta que floten.', 'Acabado en sartén 2 minutos.']) },
+  ],
+  'Comida Rápida': [
+    { titulo: 'Sándwich del día', extras: [/harina|pan/, /tomate|lechuga|queso/, /huevo|pollo|carne/, /aceite/], implementos: 'tabla y sartén', pasos: (t, i) => pasosPlato(t, i, ['Arma el relleno caliente.', 'Dora 2 minutos por lado.']) },
+    { titulo: 'Hamburguesa casera', extras: [/harina|pan/, /carne|pollo|huevo/, /tomate|queso|lechuga/, /aceite/], implementos: 'sartén y tabla', pasos: (t, i) => pasosPlato(t, i, ['Forma y dora el medallón.', 'Arma con pan y receta al momento.']) },
+    { titulo: 'Wrap de la casa', extras: [/harina|pan/, /tomate|lechuga|queso/, /pollo|huevo/, /aceite/], implementos: 'sartén y tabla', pasos: (t, i) => pasosPlato(t, i, ['Calienta el relleno 3 minutos.', 'Enrolla y marca 1 minuto por lado.']) },
+    { titulo: 'Papas salteadas', extras: [/papa|harina/, /aceite/, /huevo|queso/, /cebolla|tomate/], implementos: 'sartén y espátula', pasos: (t, i) => pasosPlato(t, i, ['Saltea a fuego medio-alto.', 'Cocina 10 minutos hasta que doren.']) },
+    { titulo: 'Huevos revueltos express', extras: [/huevo/, /aceite|mantequilla/, /tomate/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'sartén y espátula', pasos: (t, i) => pasosPlato(t, i, ['Bate los huevos.', 'Cocina 2 minutos moviendo.']) },
+    { titulo: 'Completo casero', extras: [/harina|pan/, /tomate/, /aceite/, /queso|huevo/], implementos: 'tabla y sartén', pasos: (t, i) => pasosPlato(t, i, ['Calienta el pan.', 'Arma con tomate y el resto al momento.']) },
+    { titulo: 'Quesadilla rápida', extras: [/harina|pan/, /queso/, /tomate|pollo/, /aceite/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Rellena y cierra.', 'Dora 2 minutos por lado hasta fundir.']) },
+    { titulo: 'Nuggets al horno', extras: [/pollo|huevo/, /harina/, /aceite/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'bol, lata y horno', pasos: (t, i) => pasosPlato(t, i, ['Pasa por harina y huevo.', 'Hornea 15 minutos a 200 °C.']) },
+    { titulo: 'Ensalada rápida', extras: [/tomate|lechuga/, /aceite/, /huevo|queso/, /limon/], implementos: 'bol y cuchillo', pasos: (t, i) => pasosPlato(t, i, ['Corta y mezcla en el bol.', 'Aliña y sirve fresco.']) },
+    { titulo: 'Empanada exprés', extras: [/harina/, /huevo/, /carne|pollo|queso|tomate/, /aceite/], implementos: 'uslero, lata y horno', pasos: (t, i) => pasosPlato(t, i, ['Rellena discos de masa.', 'Pinta con huevo y hornea 18 minutos a 200 °C.']) },
+  ],
+  'Comida Tailandesa': [
+    { titulo: 'Pad Thai', extras: [/harina|arroz|fideo/, /huevo/, /aceite/, /limon|lima|aji/], implementos: 'wok y pinzas', pasos: (t, i) => pasosPlato(t, i, ['Saltea el fideo a fuego alto.', 'Suma huevo, ácido y un toque picante.']) },
+    { titulo: 'Pad kra pao', extras: [/pollo|carne|huevo/, /aceite/, /aji|ajo|cebolla/, /arroz/], implementos: 'wok y cuchara', pasos: (t, i) => pasosPlato(t, i, ['Saltea la proteína picada.', 'Termina picante y sirve con arroz.']) },
+    { titulo: 'Curry verde de coco', extras: [/coco|leche/, /aji|jengibre/, /pollo|huevo/, /arroz/], implementos: 'olla y cuchara', pasos: (t, i) => pasosPlato(t, i, ['Sofríe la pasta de curry.', 'Cocina 10 minutos con leche de coco o similar.']) },
+    { titulo: 'Tom yum', extras: [/limon|lima/, /aji|jengibre/, /tomate/, /pollo|huevo/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Hierve el fondo aromático.', 'Suma el resto y cocina 8 minutos.']) },
+    { titulo: 'Arroz frito thai', extras: [/arroz|harina/, /huevo/, /aceite/, /aji|limon|cebolla/], implementos: 'wok', pasos: (t, i) => pasosPlato(t, i, ['Saltea el arroz con huevo.', 'Ajusta con limón o ají al final.']) },
+    { titulo: 'Pollo con leche de coco', extras: [/pollo|huevo/, /coco|leche/, /aji|jengibre/, /arroz/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Dora la proteína.', 'Cocina tapado 12 minutos en coco.']) },
+    { titulo: 'Salteado de limón y jengibre', extras: [/aceite/, /limon|lima|jengibre/, /pollo|huevo|tomate/, /arroz/], implementos: 'wok', pasos: (t, i) => pasosPlato(t, i, ['Perfuma el aceite.', 'Saltea 6 minutos y termina con cítrico.']) },
+    { titulo: 'Noodles al wok', extras: [/harina|fideo|arroz/, /aceite/, /huevo/, /aji|soya|limon/], implementos: 'wok y olla', pasos: (t, i) => pasosPlato(t, i, ['Escurre el fideo.', 'Saltea 4 minutos a fuego alto.']) },
+    { titulo: 'Som tam de tomate', extras: [/tomate/, /limon|lima/, /aji/, /aceite/], implementos: 'mortero o bol', pasos: (t, i) => pasosPlato(t, i, ['Machaca suave tomate y ají.', 'Aliña con limón y sirve fresco.']) },
+    { titulo: 'Huevos thai al sartén', extras: [/huevo/, /aceite/, /aji|limon/, /arroz|tomate/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Fríe los huevos a fuego medio-alto.', 'Sirve con arroz o tomate al lado.']) },
+  ],
+  'Comida Chilena': [
+    { titulo: 'Cazuela rápida', extras: [/pollo|carne/, /papa|choclo/, /cebolla|ajo|zanahoria/, /aceite/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Sofríe la base.', 'Cubre con agua y cocina 20 minutos.']) },
+    { titulo: 'Pebre', extras: [/tomate/, /cebolla|aji/, /aceite/, /limon/], implementos: 'tabla y bol', pasos: (t, i) => pasosPlato(t, i, ['Pica bien fino.', 'Deja reposar 5 minutos.']) },
+    { titulo: 'Charquicán', extras: [/papa/, /choclo|zapallo/, /carne|cebolla/, /aceite/], implementos: 'olla y pisón', pasos: (t, i) => pasosPlato(t, i, ['Cocina las verduras.', 'Aplasta y mezcla con la carne.']) },
+    { titulo: 'Pastel de papa exprés', extras: [/papa/, /carne|pollo/, /huevo|leche/, /aceite/], implementos: 'fuente y horno', pasos: (t, i) => pasosPlato(t, i, ['Arma capa de guiso y puré.', 'Gratina 10 minutos.']) },
+    { titulo: 'Tortilla de papa', extras: [/papa|cebolla/, /huevo/, /aceite/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Mezcla papa y huevo.', 'Cocina 4 minutos por lado.']) },
+    { titulo: 'Porotos con riendas', extras: [/poroto|lenteja/, /harina|fideo/, /cebolla|aji|tomate/, /aceite/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Cocina el poroto o similar.', 'Suma fideo y sofrito 8 minutos.']) },
+    { titulo: 'Pantrucas', extras: [/harina/, /huevo/, /aceite/, /cebolla|aji/], implementos: 'olla y cuchillo', pasos: (t, i) => pasosPlato(t, i, ['Corta tiras de masa.', 'Hiérvelas 6 minutos en el caldo.']) },
+    { titulo: 'Tomaticán', extras: [/tomate/, /cebolla/, /choclo|huevo/, /aceite/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Sofríe cebolla.', 'Suma tomate y cocina 10 minutos.']) },
+    { titulo: 'Sopaipillas', extras: [/harina/, /aceite/, /zapallo|huevo/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'sartén y uslero', pasos: (t, i) => pasosPlato(t, i, ['Estira discos delgados.', 'Fríe 1 minuto por lado.']) },
+    { titulo: 'Completo italiano', extras: [/harina|pan/, /tomate/, /palta|queso|aceite/, /huevo/], implementos: 'tabla', pasos: (t, i) => pasosPlato(t, i, ['Abre el pan.', 'Arma tomate y el resto al momento.']) },
+  ],
+  'Repostería': [
+    { titulo: 'Queque húmedo', extras: [/harina/, /huevo/, /azucar/, /mantequilla|leche/], implementos: 'bol, molde y horno', pasos: (t, i) => pasosPlato(t, i, ['Mezcla secos y húmedos.', 'Hornea 25 minutos a 180 °C.']) },
+    { titulo: 'Brownies de cacao', extras: [/cacao|chocolate/, /huevo/, /azucar/, /mantequilla|harina/], implementos: 'bol, molde y horno', pasos: (t, i) => pasosPlato(t, i, ['Integra el cacao a la masa.', 'Hornea 20 minutos; el centro debe quedar húmedo.']) },
+    { titulo: 'Galletas de la casa', extras: [/harina/, /azucar/, /mantequilla|huevo/, /vainilla/], implementos: 'bol, lata y horno', pasos: (t, i) => pasosPlato(t, i, ['Forma bolitas.', 'Hornea 12 minutos a 180 °C.']) },
+    { titulo: 'Muffins', extras: [/harina/, /huevo/, /azucar|leche/, /arandano|fruta|cacao/], implementos: 'molde muffins y horno', pasos: (t, i) => pasosPlato(t, i, ['Llena los moldes a 3/4.', 'Hornea 18 minutos a 180 °C.']) },
+    { titulo: 'Cheesecake frío', extras: [/queso crema|queso/, /crema|leche/, /azucar/, /galleta|harina|mantequilla/], implementos: 'molde y refrigerador', pasos: (t, i) => pasosPlato(t, i, ['Bate el queso hasta que quede liso.', 'Enfría al menos 2 horas.']) },
+    { titulo: 'Crema pastelera', extras: [/leche|crema/, /azucar/, /huevo/, /maicena|harina|vainilla/], implementos: 'olla y batidor', pasos: (t, i) => pasosPlato(t, i, ['Calienta la leche.', 'Espesa 5 minutos a fuego bajo.']) },
+    { titulo: 'Alfajores de manjar', extras: [/harina/, /mantequilla|huevo/, /manjar/, /azucar/], implementos: 'uslero, lata y horno', pasos: (t, i) => pasosPlato(t, i, ['Hornea tapas 10 minutos a 180 °C.', 'Rellena con manjar al enfriar.']) },
+    { titulo: 'Torta de chocolate', extras: [/cacao|chocolate/, /harina/, /huevo/, /azucar|mantequilla/], implementos: 'moldes y horno', pasos: (t, i) => pasosPlato(t, i, ['Hornea dos discos 25 minutos a 180 °C.', 'Rellena y cubre al enfriar.']) },
+    { titulo: 'Crumble de arándanos', extras: [/arandano|fruta|durazno|papaya/, /harina/, /azucar/, /mantequilla/], implementos: 'fuente y horno', pasos: (t, i) => pasosPlato(t, i, ['Cubre la fruta con el morón de harina.', 'Hornea 20 minutos a 180 °C.']) },
+    { titulo: 'Panqueques', extras: [/harina/, /huevo/, /leche/, /azucar|mantequilla/], implementos: 'bol y sartén', pasos: (t, i) => pasosPlato(t, i, ['Bate una masa líquida.', 'Cocina 1 minuto por lado.']) },
+  ],
+};
+
+const universoParaCategoria = (categoria: string, proximos: InsumoCocina[], despensa: InsumoCocina[]) =>
+  unicos([...proximos, ...despensa]).filter((item) => {
+    const nombre = normalizarTexto(item.producto);
+    if (/prueba/.test(nombre)) return false;
+    if (CATEGORIAS_SALADAS.includes(categoria) && DULCES_FUERA_DE_REPOSTERIA.test(nombre)) return false;
+    return true;
+  });
+
+const armarEstiloCategoria = (categoria: string, universo: InsumoCocina[], estilo: EstiloCategoria) => {
+  const extras = unicos(
+    estilo.extras
+      .map((patron) => buscarInsumo(universo, patron))
+      .filter((item): item is InsumoCocina => item !== null)
+  );
+  const nombres: string[] = extras.map((item) => item.producto);
+  if (nombres.length === 0) {
+    nombres.push(
+      ...universo
+        .filter((item) => encajaEnCategoria(item.producto, categoria))
+        .slice(0, 3)
+        .map((item) => item.producto)
+    );
+  }
+  if (nombres.length === 0) return null;
   const ingredientes = ingredientesMedidos(nombres, universo);
-  const pasos = pasosConMedidas('olla o sartén, cuchillo y bol', ingredientes, [
-    `Parte de ${textoInsumo(ingredientes[0])}, que es el insumo por vencer.`,
-    apoyo.length > 0
-      ? `Suma ${ingredientes.slice(1).map(textoInsumo).join('; ')}.`
-      : 'Cocina una porción chica, sin vaciar el envase.',
-    'Cocina a fuego medio 12 minutos, hasta que el conjunto quede parejo.',
-    `Sirve ${titulo}.`,
-  ]);
-  return publicar(categoria, titulo, nombres, pasos, universo);
+  if (ingredientes.length === 0) return null;
+  return publicar(
+    categoria,
+    estilo.titulo,
+    nombres,
+    pasosConMedidas(estilo.implementos, ingredientes, estilo.pasos(estilo.titulo, ingredientes)),
+    universo,
+  );
 };
 
 export const armarSugerenciasLocales = (categoria: string, proximos: InsumoCocina[], despensa: InsumoCocina[]) => {
-  const candidatos = proximos
-    .filter((item) => item.por_vencer && !/prueba/.test(normalizarTexto(item.producto)))
-    .sort((a, b) => puntajeHeroe(b, categoria) - puntajeHeroe(a, categoria) || Number(a.dias_para_vencer) - Number(b.dias_para_vencer));
+  const universo = universoParaCategoria(categoria, proximos, despensa);
   const vistas = new Set<string>();
   const recetas: SugerenciaRescate[] = [];
-  for (const heroe of candidatos) {
-    const otros = unicos([...candidatos.filter((item) => item !== heroe), ...despensa]);
-    const armada = armarDesdePlantilla(categoria, heroe, otros);
-    if (!armada) continue;
+  const agregar = (armada: SugerenciaRescate | null) => {
+    if (!armada) return;
     const clave = normalizarTexto(armada.titulo);
-    if (vistas.has(clave)) continue;
+    if (!clave || vistas.has(clave)) return;
+    if (CATEGORIAS_SALADAS.includes(categoria) && DULCES_FUERA_DE_REPOSTERIA.test(clave)) return;
     vistas.add(clave);
     recetas.push(armada);
-    if (recetas.length === 4) break;
+  };
+  const estilos = ESTILOS_CATEGORIA[categoria] || ESTILOS_CATEGORIA['Comida Rápida'];
+  for (const estilo of estilos) {
+    if (recetas.length >= 3) break;
+    agregar(armarEstiloCategoria(categoria, universo, estilo));
   }
+  if (recetas.length >= 3) return recetas;
+  const porVencer = proximos
+    .filter((item) => item.por_vencer && universo.some((fila) => normalizarTexto(fila.producto) === normalizarTexto(item.producto)))
+    .sort((a, b) => puntajeHeroe(b, categoria) - puntajeHeroe(a, categoria) || Number(a.dias_para_vencer) - Number(b.dias_para_vencer));
+  const candidatos = porVencer.length > 0
+    ? porVencer
+    : universo.filter((item) => encajaEnCategoria(item.producto, categoria));
   for (const heroe of candidatos) {
     if (recetas.length >= 3) break;
-    const generica = completarGenerico(categoria, heroe, despensa);
-    if (!generica) continue;
-    const clave = normalizarTexto(generica.titulo);
-    if (vistas.has(clave)) continue;
-    vistas.add(clave);
-    recetas.push(generica);
+    agregar(armarDesdePlantilla(categoria, heroe, universo));
   }
   return recetas;
+};
+
+export const insumosUtilesParaModelo = (categoria: string, despensa: InsumoCocina[], limite: number) => {
+  const preferencia = PREFERENCIA_CATEGORIA[categoria];
+  const basicos = [/harina/, /azucar/, /huevo/, /aceite/, /leche/, /arroz/, /tomate/, /cebolla/, /ajo/, /soya/, /jengibre/];
+  const ordenados = unicos(despensa).sort((a, b) => {
+    const na = normalizarTexto(a.producto);
+    const nb = normalizarTexto(b.producto);
+    const pa = (preferencia?.test(na) ? 2 : 0) + (basicos.some((patron) => patron.test(na)) ? 1 : 0);
+    const pb = (preferencia?.test(nb) ? 2 : 0) + (basicos.some((patron) => patron.test(nb)) ? 1 : 0);
+    return pb - pa;
+  });
+  return ordenados.slice(0, limite).map((item) => item.producto);
 };
 
 const PALABRAS_DEL_TITULO = ['crema', 'queso', 'pollo', 'carne', 'pescado', 'chocolate', 'manjar', 'tomate', 'arroz', 'huevo', 'leche'];
@@ -505,14 +629,24 @@ export const cerrarSugerenciaModelo = (entrada: {
   const permiteLacteo = entrada.categoria === 'Repostería'
     || entrada.categoria === 'Comida Italiana'
     || otrosPorVencer.length === 0;
-  const nombres = [...new Set(entrada.nombres.map((nombre) => nombre.trim()).filter(Boolean))]
-    .filter((nombre) => permiteLacteo || rolInsumo(nombre) !== 'lacteo');
+  let nombres = [...new Set(entrada.nombres.map((nombre) => nombre.trim()).filter(Boolean))]
+    .filter((nombre) => permiteLacteo || rolInsumo(nombre) !== 'lacteo')
+    .filter((nombre) => encajaEnCategoria(nombre, entrada.categoria) || !DULCES_FUERA_DE_REPOSTERIA.test(normalizarTexto(nombre)));
+  if (CATEGORIAS_SALADAS.includes(entrada.categoria) && DULCES_FUERA_DE_REPOSTERIA.test(normalizarTexto(titulo))) {
+    return null;
+  }
+  const porVencerAfines = entrada.porVencer.filter((item) => encajaEnCategoria(item.producto, entrada.categoria));
+  const clavesVencer = new Set(porVencerAfines.map((item) => normalizarTexto(item.producto)));
+  const usaLoQueVence = (lista: string[]) => lista.some((nombre) => clavesVencer.has(normalizarTexto(nombre)));
+  if (porVencerAfines.length > 0 && !usaLoQueVence(nombres)) {
+    nombres = [...porVencerAfines.slice(0, 3).map((item) => item.producto), ...nombres];
+  }
   const ingredientes = ingredientesMedidos(nombres, entrada.insumos, entrada.pedidos);
   const minimo = entrada.insumos.length > 1 ? 2 : 1;
   const pasos = pasosDelModelo(entrada.pasos);
-  const clavesVencer = new Set(entrada.porVencer.map((item) => normalizarTexto(item.producto)));
-  const usaLoQueVence = ingredientes.some((ing) => clavesVencer.has(normalizarTexto(ing.producto)));
-  if (ingredientes.length < minimo || pasos.length < 3 || !usaLoQueVence || !tituloCoherente(titulo, ingredientes)) {
+  const incluyeVencer = porVencerAfines.length === 0
+    || ingredientes.some((ing) => clavesVencer.has(normalizarTexto(ing.producto)));
+  if (ingredientes.length < minimo || pasos.length < 3 || !incluyeVencer || !tituloCoherente(titulo, ingredientes)) {
     return null;
   }
   return {
@@ -523,4 +657,112 @@ export const cerrarSugerenciaModelo = (entrada: {
     ingredientes,
     pasos: pasosConMedidas('olla o sartén, cuchillo y bol', ingredientes, pasos),
   };
+};
+
+const VACIAS_TITULO = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y', 'con', 'al', 'en', 'a', 'un', 'una', 'para', 'tipo', 'no', 'su']);
+
+export const tokensPlato = (titulo: string) =>
+  normalizarTexto(titulo)
+    .replace(/[^a-z0-9ñ\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !VACIAS_TITULO.has(token));
+
+const jaccard = (a: string[], b: string[]) => {
+  const uno = new Set(a);
+  const dos = new Set(b);
+  if (uno.size === 0 || dos.size === 0) return 0;
+  let inter = 0;
+  for (const token of uno) if (dos.has(token)) inter += 1;
+  return inter / new Set([...uno, ...dos]).size;
+};
+
+const familiaTecnica = (tokens: string[]) => {
+  const texto = tokens.join(' ');
+  if (/torta|quiche|frittata|omelette|tortilla/.test(texto)) return 'huevo-horno';
+  if (/pasta|spaghetti|fettuccine|lasagna|noqui|penne|tagliatelle|pomodoro|aglio/.test(texto)) return 'pasta';
+  if (/risotto/.test(texto)) return 'risotto';
+  if (/pizza|focaccia|bruschetta/.test(texto)) return 'masa-horno';
+  if (/ensalada|caprese/.test(texto)) return 'ensalada';
+  if (/sopa|minestrone|caldo|tom yum|wantan/.test(texto)) return 'sopa';
+  if (/cazuela|charquican|tomatican|pastel de papa/.test(texto)) return 'guiso-chileno';
+  if (/pebre/.test(texto)) return 'pebre';
+  if (/sopaipilla/.test(texto)) return 'frito';
+  if (/sandwich|hamburguesa|wrap|completo|quesadilla/.test(texto)) return 'sandwich';
+  if (/queque|muffin|panqueque/.test(texto)) return 'queque';
+  if (/brownie|chocolate/.test(texto) && /torta/.test(texto) === false) return 'brownie';
+  if (/galleta|alfajor/.test(texto)) return 'galleta';
+  if (/cheesecake|crema pastelera/.test(texto)) return 'crema';
+  if (/curry|kra pao/.test(texto)) return 'curry';
+  if (/pad|noodle|chow mein|fideos/.test(texto)) return 'fideos';
+  if (/kung pao|chop suey|agridulce/.test(texto)) return 'salteado-chino';
+  if (/arroz/.test(texto)) return 'arroz';
+  return '';
+};
+
+const clavesInsumo = (ingredientes: IngredienteMedido[]) =>
+  [...new Set(
+    ingredientes
+      .map((ing) => normalizarTexto(cortoInsumo(ing.producto)))
+      .filter((nombre) => nombre.length >= 4 && !/aceite|sal fina|sal de mesa|^agua\b/.test(nombre))
+  )];
+
+export const FAMILIAS_IA: Record<string, { ids: string[]; prompt: string }[]> = {
+  'Comida Italiana': [
+    { ids: ['pasta'], prompt: 'pasta o ñoquis con salsa (prohibido: torta, quiche, frittata)' },
+    { ids: ['risotto', 'masa-horno'], prompt: 'risotto, pizza o bruschetta (no pasta ni spaghetti ni fettuccine)' },
+    { ids: ['ensalada', 'sopa', 'huevo-horno'], prompt: 'ensalada caprese, minestrone o frittata salada' },
+  ],
+  'Comida Rápida': [
+    { ids: ['sandwich'], prompt: 'sándwich, hamburguesa o wrap' },
+    { ids: ['huevo-horno'], prompt: 'huevos, papas o quesadilla (otro formato)' },
+    { ids: ['ensalada', 'frito'], prompt: 'ensalada, nuggets u empanada' },
+  ],
+  'Comida Tailandesa': [
+    { ids: ['fideos'], prompt: 'pad thai o noodles al wok' },
+    { ids: ['curry', 'sopa'], prompt: 'curry, tom yum o kra pao' },
+    { ids: ['ensalada', 'arroz', 'huevo-horno'], prompt: 'ensalada som tam, arroz frito o huevos thai' },
+  ],
+  'Comida Chilena': [
+    { ids: ['guiso-chileno'], prompt: 'cazuela, charquicán o tomaticán' },
+    { ids: ['huevo-horno', 'sopa'], prompt: 'tortilla de papa, pastel de papa o pantrucas' },
+    { ids: ['pebre', 'sandwich', 'frito'], prompt: 'pebre, completo o sopaipillas' },
+  ],
+  'Comida China': [
+    { ids: ['arroz', 'fideos'], prompt: 'arroz frito o chow mein' },
+    { ids: ['salteado-chino'], prompt: 'pollo kung pao, chop suey o agridulce' },
+    { ids: ['sopa', 'huevo-horno'], prompt: 'sopa wantán, rollitos o huevos fu yung' },
+  ],
+  'Repostería': [
+    { ids: ['queque'], prompt: 'queque, muffins o panqueques' },
+    { ids: ['brownie', 'galleta'], prompt: 'brownies, galletas o crumble (no otro queque)' },
+    { ids: ['crema'], prompt: 'cheesecake, crema pastelera o alfajores' },
+  ],
+};
+
+export const elegirFamiliaIa = (categoria: string, titulosOcupados: string[]) => {
+  const ocupadas = new Set(titulosOcupados.map((titulo) => familiaTecnica(tokensPlato(titulo))).filter(Boolean));
+  const lista = FAMILIAS_IA[categoria] ?? FAMILIAS_IA['Comida Italiana'];
+  return lista.find((familia) => !familia.ids.some((id) => ocupadas.has(id))) ?? lista[lista.length - 1] ?? lista[0];
+};
+
+export const tituloInvalido = (titulo: string) => {
+  const limpio = normalizarTexto(titulo);
+  return !limpio || /^preparacion de /.test(limpio) || /no incluida|en su lugar/.test(limpio);
+};
+
+export const tituloParecido = (titulo: string, usados: string[], mismaTecnica = false) => {
+  if (tituloInvalido(titulo)) return true;
+  const tokens = tokensPlato(titulo);
+  return usados.some((previo) => {
+    const otros = tokensPlato(previo);
+    if (jaccard(tokens, otros) >= 0.5) return true;
+    const familia = familiaTecnica(tokens);
+    return mismaTecnica && Boolean(familia) && familia === familiaTecnica(otros);
+  });
+};
+
+export const recetaEsDistinta = (nueva: SugerenciaRescate, anteriores: SugerenciaRescate[]) => {
+  if (tituloParecido(nueva.titulo, anteriores.map((item) => item.titulo), true)) return false;
+  const insumosNuevo = clavesInsumo(nueva.ingredientes);
+  return anteriores.every((previa) => jaccard(insumosNuevo, clavesInsumo(previa.ingredientes)) < 0.8);
 };

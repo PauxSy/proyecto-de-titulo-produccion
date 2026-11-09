@@ -266,7 +266,7 @@ export function AnaliticaMermas() {
         </div>
         <div className="campo">
           <label htmlFor="periodoMerma">Período</label>
-          <select id="periodoMerma" className="campo-select" value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
+          <select id="periodoMerma" className="campo-select" value={periodo} onChange={(e) => cargar({ periodo: e.target.value })}>
             <option value="dia">Día</option>
             <option value="semana">Semana</option>
             <option value="mes">Mes</option>
@@ -274,14 +274,14 @@ export function AnaliticaMermas() {
         </div>
         <div className="campo">
           <label htmlFor="categoriaMerma">Tipo de producto</label>
-          <select id="categoriaMerma" className="campo-select" value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+          <select id="categoriaMerma" className="campo-select" value={categoria} onChange={(e) => cargar({ categoria: e.target.value })}>
             <option value="">Todas</option>
             {catalogos.categorias.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </div>
         <div className="campo">
           <label htmlFor="responsableMerma">Responsable</label>
-          <select id="responsableMerma" className="campo-select" value={usuarioId} onChange={(e) => setUsuarioId(e.target.value)}>
+          <select id="responsableMerma" className="campo-select" value={usuarioId} onChange={(e) => cargar({ usuarioId: e.target.value })}>
             <option value="">Todos</option>
             {catalogos.responsables.map((item) => (
               <option key={item.usuario_id} value={item.usuario_id}>{item.usuario || `Usuario ${item.usuario_id}`}</option>
@@ -290,13 +290,13 @@ export function AnaliticaMermas() {
         </div>
         <div className="campo">
           <label htmlFor="motivoMerma">Motivo</label>
-          <select id="motivoMerma" className="campo-select" value={motivo} onChange={(e) => setMotivo(e.target.value)}>
+          <select id="motivoMerma" className="campo-select" value={motivo} onChange={(e) => cargar({ motivo: e.target.value })}>
             <option value="">Todos</option>
             {MOTIVOS.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </div>
       </div>
-      <button type="button" className="btn-mini" onClick={() => cargar()} disabled={cargando}>
+      <button type="button" className="btn-aplicar" onClick={() => cargar()} disabled={cargando}>
         Aplicar rango
       </button>
 
@@ -419,6 +419,7 @@ export function AnaliticaMermas() {
               </li>
             ))}
           </ul>
+
         </>
       )}
     </section>

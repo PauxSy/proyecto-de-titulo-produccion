@@ -6,7 +6,7 @@ import { consultaInventario, registrarMerma, soloAdministrador, soloBodegueroOAd
 import { cors } from 'hono/cors'; 
 import usuarios from './routes/usuarios';
 import recetas from './routes/recetas';
-import { armarSugerenciasLocales, cerrarSugerenciaModelo, normalizarTexto, type InsumoCocina } from './chefRecetas';
+import { armarSugerenciasLocales, cerrarSugerenciaModelo, elegirFamiliaIa, encajaEnCategoria, insumosUtilesParaModelo, normalizarTexto, recetaEsDistinta, tituloInvalido, tituloParecido, type InsumoCocina } from './chefRecetas';
 
 type Bindings = {
   DATABASE_URL: string;
@@ -1696,12 +1696,10 @@ const MODELO_IA = '@cf/meta/llama-4-scout-17b-16e-instruct';
 const TTL_CACHE_IA_MS = 900_000;
 const cacheSugerenciasIa = new Map<string, { vence: number; cuerpo: any }>();
 const CATEGORIAS_NO_ALIMENTARIAS = ['Aseo y Limpieza', 'Embalaje', 'Utensilios Descartables'];
+const LIMITE_POR_VENCER_IA = 10;
+const LIMITE_RECETAS_IA = 1;
 const LIMITE_INSUMOS_IA = 10;
-const LIMITE_DESPENSA_MODELO = 15;
-const PATRONES_DESPENSA_UTIL = [
-  /harina/, /azucar/, /huevo/, /aceite/, /leche/, /mantequilla|margarina/, /tomate/,
-  /(^|\s)sal /, /cacao|chocolate/, /manjar/, /queso/, /cebolla/, /ajo/, /arroz/,
-];
+const LIMITE_DESPENSA_MODELO = 8;
 const CLAVE_CATEGORIA_RESTAURANTE = 'categoria_restaurante';
 const CATEGORIAS_RESTAURANTE = [
   'Repostería',
@@ -1792,6 +1790,12 @@ app.put('/ia/categoria-restaurante', soloChefOAdministrador, async (c) => {
 });
 
 app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
+  const renovar = c.req.query('renovar') === '1';
+  const evitar = (c.req.query('evitar') || '')
+    .split('|')
+    .map((titulo) => titulo.trim())
+    .filter(Boolean)
+    .slice(0, 8);
   const sql = getDb(c.env.DATABASE_URL);
 
   let categoriaRestaurante = CATEGORIA_RESTAURANTE_INICIAL;
@@ -1827,7 +1831,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
           ORDER BY MIN(l.fecha_vencimiento) ASC, p.id ASC
           LIMIT $3
         `,
-        [umbrales.amarillo, CATEGORIAS_NO_ALIMENTARIAS, LIMITE_INSUMOS_IA]
+        [umbrales.amarillo, CATEGORIAS_NO_ALIMENTARIAS, LIMITE_POR_VENCER_IA]
       ),
       // Mayor stock relativo a su máximo (compara productos con distintas unidades)
       sql.query(
@@ -1941,19 +1945,23 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
 
   const inicio = Date.now();
 
-  const respaldoLocal = (mensaje: string) => ({
+  const sugerenciasChef = armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa);
+  const cuerpoChef = (mensaje: string, fase: 'parcial' | 'final') => ({
     success: true,
-    origen: 'local' as const,
+    origen: 'chef' as const,
     modelo: null,
     categoria_restaurante: categoriaRestaurante,
     contexto,
-    sugerencias: armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa),
+    sugerencias: [],
+    sugerencias_ia: [],
+    sugerencias_chef: sugerenciasChef,
     generado_en_ms: Date.now() - inicio,
     mensaje,
+    fase,
   });
 
   if (!c.env.AI?.run) {
-    return c.json(respaldoLocal('La IA no está disponible. Se muestran recetas armadas con lo que vence y con la despensa.'));
+    return c.json(cuerpoChef(`Recetas de ${categoriaRestaurante} con los insumos que vencen primero.`, 'final'));
   }
 
   const menuParaModelo = recetasMenu
@@ -1964,108 +1972,110 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
       plato: receta.nombre_plato,
       insumos: receta.ingredientes.map((ing: any) => ing.producto),
     }));
-  const despensaParaModelo = despensa
-    .filter((item) => PATRONES_DESPENSA_UTIL.some((patron) => patron.test(normalizarTexto(item.producto))))
-    .slice(0, LIMITE_DESPENSA_MODELO)
-    .map((item) => item.producto);
-  const claveCache = `v8|${categoriaRestaurante}|${listado.proximos_a_vencer
+  const despensaParaModelo = insumosUtilesParaModelo(categoriaRestaurante, despensa, LIMITE_DESPENSA_MODELO);
+  const porVencerAfines = listado.proximos_a_vencer.filter((item) => encajaEnCategoria(item.insumo, categoriaRestaurante));
+  const porVencerFuera = listado.proximos_a_vencer.filter((item) => !encajaEnCategoria(item.insumo, categoriaRestaurante));
+  const claveCache = `v18|${categoriaRestaurante}|${listado.proximos_a_vencer
     .map((item) => `${item.insumo}:${item.vence_en_dias}:${item.cantidad_disponible}`)
     .join(',')}|${despensaParaModelo.join(',')}`;
+  const titulosChef = sugerenciasChef.map((item) => String(item.titulo || '')).filter(Boolean);
 
-  const generarConModelo = async () => {
+  const extraerUnaReceta = (cuerpo: any, previas: any[]) => {
+    const usados = [...evitar, ...titulosChef, ...previas.map((item) => String(item.titulo || ''))];
+    const crudas = Array.isArray(cuerpo?.sugerencias) ? cuerpo.sugerencias : (cuerpo?.titulo ? [cuerpo] : []);
+    for (const sugerencia of crudas) {
+      const pedidos = new Map<string, number>();
+      const desdeIngredientes = (Array.isArray(sugerencia?.ingredientes) ? sugerencia.ingredientes : [])
+        .map((ing: any) => {
+          const nombre = resolverInsumo(ing?.nombre ?? ing?.producto);
+          const cantidad = Number(ing?.cantidad);
+          if (nombre && cantidad > 0) pedidos.set(normalizarTexto(nombre), cantidad);
+          return nombre;
+        });
+      const insumos = [...new Set(
+        [
+          ...(Array.isArray(sugerencia?.insumos_usados) ? sugerencia.insumos_usados : []).map((nombre: unknown) => resolverInsumo(nombre)),
+          ...desdeIngredientes,
+        ].filter((nombre: string | null): nombre is string => Boolean(nombre))
+      )];
+      const titulo = typeof sugerencia?.titulo === 'string' ? sugerencia.titulo.trim() : '';
+      if (tituloInvalido(titulo) || tituloParecido(titulo, usados, true)) continue;
+      const cerrada = cerrarSugerenciaModelo({
+        categoria: categoriaRestaurante,
+        titulo,
+        nombres: insumos,
+        pasos: sugerencia?.pasos,
+        pedidos,
+        insumos: inventario,
+        porVencer: porVencerMarcados,
+      });
+      if (cerrada && recetaEsDistinta(cerrada, previas)) return cerrada;
+    }
+    return null;
+  };
+
+  const generarUnaReceta = async (previas: any[], numero: number) => {
+    const usados = [...evitar, ...titulosChef, ...previas.map((item) => String(item.titulo || ''))];
+    const familia = elegirFamiliaIa(categoriaRestaurante, usados);
+    const heroe = porVencerAfines[(numero - 1) % Math.max(porVencerAfines.length, 1)];
+    const anteriores = [...sugerenciasChef, ...previas]
+      .map((item) => `${item.titulo} [${(item.ingredientes || []).map((ing: any) => ing.producto).slice(0, 4).join(', ')}]`)
+      .join(' | ');
     const mensajes = [
       {
         role: 'system',
         content:
           `Eres el chef de un restaurante de ${categoriaRestaurante} en Chile. ` +
-          'Arma exactamente 3 recetas distintas de esa categoría. Cada una debe usar un insumo por vencer distinto. ' +
-          'Los demás ingredientes salen de la despensa y no tienen que estar por vencer. ' +
-          'Copia el nombre exacto del insumo. No inventes insumos que no estén en las listas. ' +
-          'En cada paso nombra el implemento (olla, sartén, cuchillo, bol, molde) y la cantidad exacta. No escribas "un poco" ni "el envase". ' +
-          'El título nombra el plato y solo menciona ingredientes que realmente usas. ' +
-          'No hagas un postre de crema si la categoría no es Repostería, salvo que la crema sea el único insumo por vencer. ' +
-          'El aceite se puede usar como ingrediente. No propongas un plato que se llame aceite ni fabricar aceite. ' +
-          'Escribe 4 a 6 pasos concretos. El tipo es receta. Si el plato no está en el menú, receta_id es 0. Responde en español de Chile. ' +
-          'Responde SOLO un JSON válido, sin markdown, con la forma ' +
+          `Arma exactamente 1 plato real de ${categoriaRestaurante}, distinto a las sugerencias del chef. ` +
+          `Este plato DEBE ser: ${familia.prompt}. ` +
+          'Usa primero los insumos por vencer que combinan con esa cocina. ' +
+          'Nunca hagas salteado, curry, arroz o pasta de cacao, chocolate, manjar o colorante si no es Repostería. ' +
+          'Copia el nombre exacto de la despensa. No inventes insumos. 4 pasos concretos. Título corto = nombre del plato, nunca "Preparación de" ni "en su lugar". ' +
+          'receta_id 0 si no está en el menú. Español de Chile. SOLO JSON ' +
           '{"sugerencias":[{"tipo":"receta","titulo":"...","receta_id":0,"insumos_usados":["..."],"ingredientes":[{"nombre":"...","cantidad":1}],"pasos":["..."]}]}',
       },
       {
         role: 'user',
-        content: `Categoría: ${categoriaRestaurante}.\nMenú de referencia:\n${JSON.stringify(menuParaModelo)}\nInsumos por vencer:\n${JSON.stringify(listado.proximos_a_vencer)}\nDespensa, se puede usar aunque no venza:\n${JSON.stringify(despensaParaModelo)}`,
+        content:
+          `Categoría: ${categoriaRestaurante}.\n` +
+          `Familia obligatoria: ${familia.prompt}.\n` +
+          (heroe ? `Insumo protagonista de este plato: ${heroe.insumo}.\n` : '') +
+          `Insumos por vencer que SÍ combinan con el rubro:\n${JSON.stringify(porVencerAfines)}\n` +
+          `Insumos por vencer que NO debes usar en estos platos:\n${JSON.stringify(porVencerFuera)}\n` +
+          `Menú de referencia:\n${JSON.stringify(menuParaModelo)}\n` +
+          `Despensa, se puede usar aunque no venza:\n${JSON.stringify(despensaParaModelo)}` +
+          (anteriores ? `\nSugerencias del chef, prohibido copiarlas o hacer variantes: ${anteriores}.` : '') +
+          (usados.length > 0 ? `\nTítulos prohibidos: ${usados.join(', ')}.` : '') +
+          (renovar ? '\nPropón una combinación distinta a las de antes.' : ''),
       },
     ];
-
     try {
       const respuesta = await c.env.AI.run(MODELO_IA, {
         messages: mensajes,
-        max_tokens: 1200,
-        temperature: 0.4,
+        max_tokens: 400,
+        temperature: numero > 1 || renovar ? 0.75 : 0.45,
       });
-
-      const cuerpo = extraerJsonModelo(respuesta);
-      let descartadas = 0;
-      const sugerencias = (Array.isArray(cuerpo?.sugerencias) ? cuerpo.sugerencias : [])
-        .slice(0, 3)
-        .map((sugerencia: any) => {
-          const pedidos = new Map<string, number>();
-          const desdeIngredientes = (Array.isArray(sugerencia?.ingredientes) ? sugerencia.ingredientes : [])
-            .map((ing: any) => {
-              const nombre = resolverInsumo(ing?.nombre ?? ing?.producto);
-              const cantidad = Number(ing?.cantidad);
-              if (nombre && cantidad > 0) pedidos.set(normalizarTexto(nombre), cantidad);
-              return nombre;
-            });
-          const insumos = [...new Set(
-            [
-              ...(Array.isArray(sugerencia?.insumos_usados) ? sugerencia.insumos_usados : []).map((nombre: unknown) => resolverInsumo(nombre)),
-              ...desdeIngredientes,
-            ].filter((nombre: string | null): nombre is string => Boolean(nombre))
-          )];
-          const titulo = typeof sugerencia?.titulo === 'string' ? sugerencia.titulo.trim() : '';
-          const cerrada = cerrarSugerenciaModelo({
-            categoria: categoriaRestaurante,
-            titulo,
-            nombres: insumos,
-            pasos: sugerencia?.pasos,
-            pedidos,
-            insumos: inventario,
-            porVencer: porVencerMarcados,
-          });
-          if (!cerrada) {
-            descartadas += 1;
-            return null;
-          }
-          return cerrada;
-        })
-        .filter(Boolean);
-
-      const locales = armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa);
-      const vistas = new Set<string>();
-      const juntas = [...sugerencias, ...locales].filter((item) => {
-        const clave = normalizarTexto(String(item?.titulo ?? ''));
-        if (!clave || vistas.has(clave)) return false;
-        vistas.add(clave);
-        return true;
-      }).slice(0, 4);
-
-      if (juntas.length < 1) return { error: 'insuficientes' };
-
-      return {
-        success: true,
-        modelo: MODELO_IA,
-        origen: 'ia',
-        generado_en_ms: Date.now() - inicio,
-        categoria_restaurante: categoriaRestaurante,
-        contexto,
-        sugerencias: juntas,
-        descartadas_por_alucinacion: descartadas,
-      };
+      return extraerUnaReceta(extraerJsonModelo(respuesta), previas);
     } catch {
-      return { error: 'fallo' };
+      return null;
     }
   };
 
-  // Si el modelo no arma una receta completa, se arma una con lo que vence y con la despensa.
+  const cuerpoIa = (recetas: any[], fase: 'ia-espera' | 'ia-parcial' | 'final', recetaEnCurso = 0) => ({
+    success: true,
+    origen: 'ia' as const,
+    modelo: MODELO_IA,
+    categoria_restaurante: categoriaRestaurante,
+    contexto,
+    sugerencias: recetas,
+    sugerencias_ia: recetas,
+    sugerencias_chef: sugerenciasChef,
+    generado_en_ms: Date.now() - inicio,
+    pendientes_ia: Math.max(0, LIMITE_RECETAS_IA - recetas.length),
+    receta_en_curso: recetaEnCurso,
+    fase,
+  });
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -2073,28 +2083,36 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
       try {
-        const guardado = cacheSugerenciasIa.get(claveCache);
+        if (renovar) cacheSugerenciasIa.delete(claveCache);
+        const guardado = renovar ? undefined : cacheSugerenciasIa.get(claveCache);
         if (guardado && guardado.vence > Date.now()) {
-          enviar({ ...guardado.cuerpo, fase: 'final', desde_cache: true, generado_en_ms: Date.now() - inicio });
+          enviar({ ...guardado.cuerpo, fase: 'final', pendientes_ia: 0, desde_cache: true, generado_en_ms: Date.now() - inicio });
           return;
         }
-        const localesYa = armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa);
-        if (localesYa.length > 0) {
-          enviar({
-            ...respaldoLocal('Recetas de respaldo. La IA sigue generando sugerencias...'),
-            sugerencias: localesYa,
-            fase: 'parcial',
-          });
+        enviar({
+          ...cuerpoChef(`Armando recetas de Chef IA para ${categoriaRestaurante}...`, 'parcial'),
+          pendientes_ia: LIMITE_RECETAS_IA,
+          receta_en_curso: 1,
+        });
+        const recetas: any[] = [];
+        for (let n = 1; n <= LIMITE_RECETAS_IA; n++) {
+          enviar(cuerpoIa(recetas, 'ia-espera', n));
+          let receta = null;
+          for (let intento = 0; intento < 2 && !receta; intento++) {
+            receta = await generarUnaReceta(recetas, n);
+          }
+          if (!receta) continue;
+          recetas.push(receta);
+          enviar(cuerpoIa(recetas, n === LIMITE_RECETAS_IA ? 'final' : 'ia-parcial', n === LIMITE_RECETAS_IA ? 0 : n + 1));
         }
-        const ia = await generarConModelo();
-        if (ia && !ia.error) {
-          guardarCacheIa(claveCache, ia);
-          enviar({ ...ia, fase: 'final' });
-        } else {
-          enviar({ ...respaldoLocal('La IA no generó una receta completa. Se muestran recetas armadas con lo que vence y con la despensa.'), fase: 'final' });
+        if (recetas.length > 0 && recetas.length < LIMITE_RECETAS_IA) {
+          enviar(cuerpoIa(recetas, 'final', 0));
+        } else if (recetas.length === 0) {
+          enviar(cuerpoChef(`Recetas de ${categoriaRestaurante} con los insumos que vencen primero.`, 'final'));
         }
+        if (recetas.length > 0) guardarCacheIa(claveCache, cuerpoIa(recetas, 'final'));
       } catch {
-        enviar({ ...respaldoLocal('La IA no generó una receta completa. Se muestran recetas armadas con lo que vence y con la despensa.'), fase: 'final' });
+        enviar(cuerpoChef(`Recetas de ${categoriaRestaurante} con los insumos que vencen primero.`, 'final'));
       } finally {
         try { controller.close(); } catch { /* el cliente ya cerró el stream */ }
       }
@@ -2306,16 +2324,11 @@ app.get('/analitica/mermas', soloChefOAdministrador, async (c) => {
       ),
       sql.query(
         `
-          SELECT DISTINCT p.categoria
-          FROM merma m
-          JOIN lote l ON l.id = m.id_lote
-          JOIN producto p ON p.id = l.id_producto
-          WHERE m.fecha >= (($1::date)::timestamp AT TIME ZONE 'America/Santiago') AT TIME ZONE 'UTC'
-            AND m.fecha < (($2::date + 1)::timestamp AT TIME ZONE 'America/Santiago') AT TIME ZONE 'UTC'
-            AND p.categoria IS NOT NULL
-          ORDER BY p.categoria
-        `,
-        [desde, hasta]
+          SELECT DISTINCT categoria
+          FROM producto
+          WHERE categoria IS NOT NULL AND btrim(categoria) <> ''
+          ORDER BY categoria
+        `
       ),
       sql.query(
         `

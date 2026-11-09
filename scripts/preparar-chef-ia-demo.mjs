@@ -1,50 +1,95 @@
 import { Pool } from '@neondatabase/serverless'
 import fs from 'fs'
 
-// Deja insumos reales dentro de la alerta amarilla (7 días) para que Chef IA
-// arme sugerencias. Solo cambia fechas de vencimiento: las cantidades y el
-// balance quedan igual. Se puede volver a ejecutar; las fechas se recalculan
-// desde el día de hoy en Chile.
+// Deja ~20 insumos alimentarios dentro de la alerta amarilla (0 a 7 días)
+// para que Chef IA tenga variedad. Solo cambia fechas de vencimiento.
 
-const url = fs.readFileSync('.dev.vars', 'utf8').match(/DATABASE_URL=(.+)/)[1].trim()
+const archivo = ['.dev.vars', 'dev.vars'].find((nombre) => fs.existsSync(nombre))
+if (!archivo) {
+  console.error('No está .dev.vars ni dev.vars')
+  process.exit(1)
+}
+const url = fs.readFileSync(archivo, 'utf8').match(/DATABASE_URL=(.+)/)?.[1]?.trim()
+if (!url) {
+  console.error(`${archivo} no tiene DATABASE_URL`)
+  process.exit(1)
+}
+
 const pool = new Pool({ connectionString: url })
 const client = await pool.connect()
-
 const HOY = `(NOW() AT TIME ZONE 'America/Santiago')::date`
-
-const lotes = [
-  { id: 236, productoId: 269, dias: 1, nombre: 'Tomate fresco' },
-  { id: 125, productoId: 123, dias: 2, nombre: 'Aceite Vegetal Maravilla 1L' },
-  { id: 237, productoId: 269, dias: 3, nombre: 'Tomate fresco' },
-  { id: 104, productoId: 102, dias: 5, nombre: 'Harina de Trigo Tradicional 1kg' },
-  { id: 118, productoId: 116, dias: 6, nombre: 'Crema para Batir UHT 1L' },
-  { id: 111, productoId: 109, dias: 6, nombre: 'Cacao Amargo en Polvo 200g' },
-  { id: 115, productoId: 113, dias: 7, nombre: 'Manjar Tradicional Repostero 1kg' },
-]
+const NO_ALIMENTO = ['Aseo y Limpieza', 'Embalaje', 'Utensilios Descartables']
+const NO_PERECIBLE = [
+  'harina',
+  'az[uú]car',
+  'sal fina',
+  'sal de mesa',
+  'aceite',
+  'cacao',
+  'almendra',
+  'avellana',
+  'nuez',
+  'mani',
+  'pasta de goma',
+  'alm[ií]bar',
+  'leche evaporada',
+  'leche condensada',
+  'chocolate',
+  'arroz',
+  'fideo',
+  'pasta',
+  'maicena',
+  'colorante',
+  'vainilla',
+  'vinagre',
+  'soya',
+  'polvos de hornear',
+].join('|')
+const OBJETIVO = 20
 
 try {
   await client.query('BEGIN')
 
-  const azucar = await client.query(`
-    SELECT l.id AS lote_id, p.id AS producto_id, p.nombre
-    FROM lote l
-    JOIN producto p ON p.id = l.id_producto
-    WHERE l.estado = 'ACTIVO'
-      AND l.cantidad_disponible > 0
-      AND p.nombre ~* 'azucar|azúcar'
-    ORDER BY l.cantidad_disponible DESC, l.id
-    LIMIT 1
-  `)
-  if (azucar.rowCount === 1) {
-    lotes.push({
-      id: azucar.rows[0].lote_id,
-      productoId: azucar.rows[0].producto_id,
-      dias: 4,
-      nombre: azucar.rows[0].nombre,
-    })
+  const candidatos = await client.query(
+    `
+      WITH lote_fefo AS (
+        SELECT DISTINCT ON (p.id)
+               p.id AS producto_id,
+               p.nombre,
+               p.categoria,
+               l.id AS lote_id,
+               l.numero_lote,
+               l.cantidad_disponible
+        FROM producto p
+        JOIN lote l ON l.id_producto = p.id
+        WHERE l.estado = 'ACTIVO'
+          AND l.cantidad_disponible > 0
+          AND NOT (p.categoria = ANY($1))
+          AND p.nombre !~* $3
+          AND p.nombre !~* 'prueba|colorante'
+        ORDER BY p.id, l.fecha_vencimiento ASC, l.id ASC
+      )
+      SELECT *
+      FROM lote_fefo
+      ORDER BY
+        CASE
+          WHEN nombre ~* 'pollo|carne|tomate|cebolla|ajo|aji|limon|lima|coco|jengibre|huevo|leche|queso|papa|choclo|manjar'
+            THEN 0
+          ELSE 1
+        END,
+        nombre
+      LIMIT $2
+    `,
+    [NO_ALIMENTO, OBJETIVO, NO_PERECIBLE]
+  )
+
+  if (candidatos.rowCount === 0) {
+    throw new Error('No hay lotes activos de insumos alimentarios para marcar por vencer')
   }
 
-  for (const item of lotes) {
+  let n = 0
+  for (const item of candidatos.rows) {
+    const dias = 1 + (n % 7)
     const actualizado = await client.query(
       `
         UPDATE lote
@@ -52,42 +97,12 @@ try {
         WHERE id = $1 AND id_producto = $3 AND estado = 'ACTIVO' AND cantidad_disponible > 0
         RETURNING id, numero_lote, fecha_vencimiento::text AS vence, cantidad_disponible::float8 AS disp
       `,
-      [item.id, item.dias, item.productoId]
+      [item.lote_id, dias, item.producto_id]
     )
     if (actualizado.rowCount !== 1) {
-      throw new Error(`No se actualizó el lote ${item.id} (${item.nombre})`)
+      throw new Error(`No se actualizó el lote ${item.lote_id} (${item.nombre})`)
     }
-  }
-
-  await client.query(
-    `
-      UPDATE lote
-      SET fecha_vencimiento = (${HOY} + 40)::date
-      WHERE numero_lote = 'LOT-QA-10KG'
-        AND estado = 'ACTIVO'
-        AND fecha_vencimiento <= (${HOY} + 7)::date
-    `
-  )
-
-  const ya = await client.query(
-    `SELECT id FROM receta WHERE estado = 'activo' AND LOWER(TRIM(nombre_plato)) = LOWER(TRIM($1))`,
-    ['Bruschetta de tomate']
-  )
-  if (ya.rowCount === 0) {
-    const creada = await client.query(
-      `INSERT INTO receta (nombre_plato, porciones, rubro) VALUES ($1, $2, $3) RETURNING id`,
-      ['Bruschetta de tomate', 2, 'Comida Italiana']
-    )
-    const recetaId = creada.rows[0].id
-    await client.query(
-      `
-        INSERT INTO ingrediente_receta (id_receta, id_producto, cantidad_requerida, unidad_medida)
-        VALUES
-          ($1, 269, 2, 'un'),
-          ($1, 123, 1, 'un')
-      `,
-      [recetaId]
-    )
+    n += 1
   }
 
   const descuadre = await client.query(`
@@ -103,22 +118,25 @@ try {
 
   await client.query('COMMIT')
 
-  const ventana = await client.query(`
-    SELECT p.nombre, SUM(l.cantidad_disponible)::float8 AS cantidad,
-           MIN(l.fecha_vencimiento)::text AS vence,
-           MIN(l.fecha_vencimiento) - ${HOY} AS dias
-    FROM lote l
-    JOIN producto p ON p.id = l.id_producto
-    WHERE l.estado = 'ACTIVO'
-      AND l.cantidad_disponible > 0
-      AND l.fecha_vencimiento >= ${HOY}
-      AND l.fecha_vencimiento - ${HOY} <= 7
-      AND NOT (p.categoria = ANY($1))
-    GROUP BY p.id, p.nombre
-    ORDER BY MIN(l.fecha_vencimiento), p.nombre
-  `, [['Aseo y Limpieza', 'Embalaje', 'Utensilios Descartables']])
+  const ventana = await client.query(
+    `
+      SELECT p.nombre, SUM(l.cantidad_disponible)::float8 AS cantidad,
+             MIN(l.fecha_vencimiento)::text AS vence,
+             (MIN(l.fecha_vencimiento) - ${HOY})::int AS dias
+      FROM lote l
+      JOIN producto p ON p.id = l.id_producto
+      WHERE l.estado = 'ACTIVO'
+        AND l.cantidad_disponible > 0
+        AND l.fecha_vencimiento >= ${HOY}
+        AND l.fecha_vencimiento - ${HOY} <= 7
+        AND NOT (p.categoria = ANY($1))
+      GROUP BY p.id, p.nombre
+      ORDER BY MIN(l.fecha_vencimiento), p.nombre
+    `,
+    [NO_ALIMENTO]
+  )
 
-  console.log('Insumos que Chef IA va a usar:')
+  console.log(`Insumos por vencer (0 a 7 días): ${ventana.rowCount}`)
   console.table(ventana.rows)
 } catch (err) {
   await client.query('ROLLBACK')
