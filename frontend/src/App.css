@@ -2585,6 +2585,14 @@ body {
   margin: 0;
 }
 
+.chef-ia-parcial {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #1d4ed8;
+}
+
 .chef-ia-spinner {
   width: 36px;
   height: 36px;

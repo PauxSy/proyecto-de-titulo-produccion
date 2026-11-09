@@ -1693,10 +1693,15 @@ app.post('/comandas', soloChef, async (c) => {
 // 2. La IA arma una receta real: usa lo que vence y puede completar con otros insumos que no estén por vencer.
 // Si el modelo no entrega una receta completa, el servidor arma una con el mismo criterio.
 const MODELO_IA = '@cf/meta/llama-4-scout-17b-16e-instruct';
-const TTL_CACHE_IA_MS = 120_000;
+const TTL_CACHE_IA_MS = 900_000;
 const cacheSugerenciasIa = new Map<string, { vence: number; cuerpo: any }>();
 const CATEGORIAS_NO_ALIMENTARIAS = ['Aseo y Limpieza', 'Embalaje', 'Utensilios Descartables'];
 const LIMITE_INSUMOS_IA = 10;
+const LIMITE_DESPENSA_MODELO = 15;
+const PATRONES_DESPENSA_UTIL = [
+  /harina/, /azucar/, /huevo/, /aceite/, /leche/, /mantequilla|margarina/, /tomate/,
+  /(^|\s)sal /, /cacao|chocolate/, /manjar/, /queso/, /cebolla/, /ajo/, /arroz/,
+];
 const CLAVE_CATEGORIA_RESTAURANTE = 'categoria_restaurante';
 const CATEGORIAS_RESTAURANTE = [
   'Repostería',
@@ -1720,44 +1725,31 @@ const obtenerCategoriaRestaurante = async (sql: any) => {
   return esCategoriaRestaurante(valor) ? valor : CATEGORIA_RESTAURANTE_INICIAL;
 };
 
-const ESQUEMA_SUGERENCIAS = {
-  type: 'object',
-  properties: {
-    sugerencias: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          tipo: { type: 'string', enum: ['receta', 'promocion'] },
-          titulo: { type: 'string', description: 'Nombre corto del plato o promoción' },
-          receta_id: { type: 'integer', description: 'Id de una receta del menú entregado, o 0 si el plato es nuevo' },
-          insumos_usados: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Nombres exactos de insumos del listado entregado',
-          },
-          ingredientes: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                nombre: { type: 'string' },
-                cantidad: { type: 'number', description: 'Porción de una preparación, nunca el envase. Aceite: 2 cucharadas. Harina, azúcar o arroz: gramos (cerca de 150, 40 y 80).' },
-              },
-              required: ['nombre', 'cantidad'],
-            },
-          },
-          pasos: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '4 a 6 pasos concretos de preparación',
-          },
-        },
-        required: ['tipo', 'titulo', 'receta_id', 'insumos_usados', 'ingredientes', 'pasos'],
-      },
-    },
-  },
-  required: ['sugerencias'],
+const extraerJsonModelo = (respuesta: any) => {
+  const bruto = typeof respuesta?.response === 'string'
+    ? respuesta.response
+    : typeof respuesta === 'string'
+      ? respuesta
+      : respuesta?.response ?? respuesta;
+  if (bruto && typeof bruto === 'object' && !Array.isArray(bruto)) return bruto;
+  if (typeof bruto !== 'string') return null;
+  const limpio = bruto.replace(/```(?:json)?/gi, '').trim();
+  const inicio = limpio.indexOf('{');
+  const fin = limpio.lastIndexOf('}');
+  if (inicio === -1 || fin <= inicio) return null;
+  try {
+    return JSON.parse(limpio.slice(inicio, fin + 1));
+  } catch {
+    return null;
+  }
+};
+
+const guardarCacheIa = (clave: string, cuerpo: any) => {
+  if (cacheSugerenciasIa.size > 20) {
+    const primera = cacheSugerenciasIa.keys().next().value;
+    if (primera) cacheSugerenciasIa.delete(primera);
+  }
+  cacheSugerenciasIa.set(clave, { vence: Date.now() + TTL_CACHE_IA_MS, cuerpo });
 };
 
 // La categoría del restaurante orienta las recetas de rescate y queda guardada para el Chef y el Administrador.
@@ -1966,15 +1958,19 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
 
   const menuParaModelo = recetasMenu
     .filter((receta) => receta.ingredientes.some((ing: any) => clavesPorVencer.has(normalizarTexto(String(ing.producto)))))
-    .slice(0, 8)
+    .slice(0, 4)
     .map((receta) => ({
       receta_id: receta.id,
       plato: receta.nombre_plato,
       insumos: receta.ingredientes.map((ing: any) => ing.producto),
     }));
-  const claveCache = `v7|${categoriaRestaurante}|${listado.proximos_a_vencer
+  const despensaParaModelo = despensa
+    .filter((item) => PATRONES_DESPENSA_UTIL.some((patron) => patron.test(normalizarTexto(item.producto))))
+    .slice(0, LIMITE_DESPENSA_MODELO)
+    .map((item) => item.producto);
+  const claveCache = `v8|${categoriaRestaurante}|${listado.proximos_a_vencer
     .map((item) => `${item.insumo}:${item.vence_en_dias}:${item.cantidad_disponible}`)
-    .join(',')}|${despensa.length}`;
+    .join(',')}|${despensaParaModelo.join(',')}`;
 
   const generarConModelo = async () => {
     const mensajes = [
@@ -1982,30 +1978,31 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
         role: 'system',
         content:
           `Eres el chef de un restaurante de ${categoriaRestaurante} en Chile. ` +
-          'Arma hasta 3 recetas distintas de esa categoría. Cada una debe usar un insumo por vencer distinto. ' +
+          'Arma exactamente 3 recetas distintas de esa categoría. Cada una debe usar un insumo por vencer distinto. ' +
           'Los demás ingredientes salen de la despensa y no tienen que estar por vencer. ' +
           'Copia el nombre exacto del insumo. No inventes insumos que no estén en las listas. ' +
           'En cada paso nombra el implemento (olla, sartén, cuchillo, bol, molde) y la cantidad exacta. No escribas "un poco" ni "el envase". ' +
           'El título nombra el plato y solo menciona ingredientes que realmente usas. ' +
           'No hagas un postre de crema si la categoría no es Repostería, salvo que la crema sea el único insumo por vencer. ' +
           'El aceite se puede usar como ingrediente. No propongas un plato que se llame aceite ni fabricar aceite. ' +
-          'Escribe 4 a 6 pasos concretos. El tipo es receta. Si el plato no está en el menú, receta_id es 0. Responde en español de Chile.',
+          'Escribe 4 a 6 pasos concretos. El tipo es receta. Si el plato no está en el menú, receta_id es 0. Responde en español de Chile. ' +
+          'Responde SOLO un JSON válido, sin markdown, con la forma ' +
+          '{"sugerencias":[{"tipo":"receta","titulo":"...","receta_id":0,"insumos_usados":["..."],"ingredientes":[{"nombre":"...","cantidad":1}],"pasos":["..."]}]}',
       },
       {
         role: 'user',
-        content: `Categoría: ${categoriaRestaurante}.\nMenú de referencia:\n${JSON.stringify(menuParaModelo)}\nInsumos por vencer:\n${JSON.stringify(listado.proximos_a_vencer)}\nDespensa, se puede usar aunque no venza:\n${JSON.stringify(despensa.map((item) => item.producto))}`,
+        content: `Categoría: ${categoriaRestaurante}.\nMenú de referencia:\n${JSON.stringify(menuParaModelo)}\nInsumos por vencer:\n${JSON.stringify(listado.proximos_a_vencer)}\nDespensa, se puede usar aunque no venza:\n${JSON.stringify(despensaParaModelo)}`,
       },
     ];
 
     try {
       const respuesta = await c.env.AI.run(MODELO_IA, {
         messages: mensajes,
-        response_format: { type: 'json_schema', json_schema: ESQUEMA_SUGERENCIAS },
-        max_tokens: 1400,
+        max_tokens: 1200,
         temperature: 0.4,
       });
 
-      const cuerpo = typeof respuesta?.response === 'string' ? JSON.parse(respuesta.response) : respuesta?.response;
+      const cuerpo = extraerJsonModelo(respuesta);
       let descartadas = 0;
       const sugerencias = (Array.isArray(cuerpo?.sugerencias) ? cuerpo.sugerencias : [])
         .slice(0, 3)
@@ -2081,13 +2078,17 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
           enviar({ ...guardado.cuerpo, fase: 'final', desde_cache: true, generado_en_ms: Date.now() - inicio });
           return;
         }
+        const localesYa = armarSugerenciasLocales(categoriaRestaurante, porVencerMarcados, despensa);
+        if (localesYa.length > 0) {
+          enviar({
+            ...respaldoLocal('Recetas de respaldo. La IA sigue generando sugerencias...'),
+            sugerencias: localesYa,
+            fase: 'parcial',
+          });
+        }
         const ia = await generarConModelo();
         if (ia && !ia.error) {
-          if (cacheSugerenciasIa.size > 20) {
-            const primera = cacheSugerenciasIa.keys().next().value;
-            if (primera) cacheSugerenciasIa.delete(primera);
-          }
-          cacheSugerenciasIa.set(claveCache, { vence: Date.now() + TTL_CACHE_IA_MS, cuerpo: ia });
+          guardarCacheIa(claveCache, ia);
           enviar({ ...ia, fase: 'final' });
         } else {
           enviar({ ...respaldoLocal('La IA no generó una receta completa. Se muestran recetas armadas con lo que vence y con la despensa.'), fase: 'final' });

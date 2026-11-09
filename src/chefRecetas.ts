@@ -457,9 +457,14 @@ export const armarSugerenciasLocales = (categoria: string, proximos: InsumoCocin
     recetas.push(armada);
     if (recetas.length === 4) break;
   }
-  if (recetas.length === 0 && candidatos[0]) {
-    const generica = completarGenerico(categoria, candidatos[0], despensa);
-    if (generica) recetas.push(generica);
+  for (const heroe of candidatos) {
+    if (recetas.length >= 3) break;
+    const generica = completarGenerico(categoria, heroe, despensa);
+    if (!generica) continue;
+    const clave = normalizarTexto(generica.titulo);
+    if (vistas.has(clave)) continue;
+    vistas.add(clave);
+    recetas.push(generica);
   }
   return recetas;
 };

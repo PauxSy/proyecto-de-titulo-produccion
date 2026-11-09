@@ -55,6 +55,7 @@ function ChefIaPanel() {
   const [error, setError] = useState('')
   const [aviso, setAviso] = useState('')
   const [cargando, setCargando] = useState(!recetaGuardada)
+  const [esperandoIa, setEsperandoIa] = useState(false)
   const [guardando, setGuardando] = useState(false)
   const [ficha, setFicha] = useState(null)
   const [fichaError, setFichaError] = useState('')
@@ -72,6 +73,10 @@ function ChefIaPanel() {
     if (data.categoria_restaurante) setCategoria(data.categoria_restaurante)
     setDatos(data)
     setCargando(false)
+    setEsperandoIa(data.fase === 'parcial')
+    if (data.fase !== 'parcial') {
+      setAviso((texto) => (texto && texto.startsWith('Preparando') ? 'Sugerencias listas. Quedan en caché 15 minutos.' : texto))
+    }
     recordar(data)
   }
 
@@ -97,14 +102,14 @@ function ChefIaPanel() {
     }
   }
 
-  const cargar = async () => {
+  const cargar = async ({ preparar = false } = {}) => {
     abortRef.current?.abort()
     const controlador = new AbortController()
     abortRef.current = controlador
     setError('')
-    setAviso('')
-    setDatos(null)
-    setCargando(true)
+    setAviso(preparar ? 'Preparando sugerencias para la demo...' : '')
+    setEsperandoIa(true)
+    if (!(datos?.sugerencias || []).length) setCargando(true)
     try {
       const res = await fetchConAuth('/ia/sugerencias', { signal: controlador.signal })
       const tipo = res.headers.get('content-type') || ''
@@ -137,12 +142,14 @@ function ChefIaPanel() {
       if (error?.name === 'AbortError') return
       setError('Error de conexión con el servidor.')
     } finally {
-      if (!controlador.signal.aborted) setCargando(false)
+      if (!controlador.signal.aborted) {
+        setCargando(false)
+        setEsperandoIa(false)
+      }
     }
   }
 
   useEffect(() => {
-    if (leerRecetaIa()) return undefined
     let vigente = true
     const iniciar = async () => {
       try {
@@ -218,8 +225,11 @@ function ChefIaPanel() {
           <h1>Chef IA y rescate</h1>
           <p className="subtitle">Recetas de {categoria} para usar primero lo que está por vencer. El resto de ingredientes sale del inventario.</p>
         </div>
-        <button type="button" className="btn-mini btn-mini-outline" onClick={cargar} disabled={cargando || guardando}>
+        <button type="button" className="btn-mini btn-mini-outline" onClick={() => cargar()} disabled={cargando || esperandoIa || guardando}>
           Actualizar
+        </button>
+        <button type="button" className="btn-mini" onClick={() => cargar({ preparar: true })} disabled={cargando || esperandoIa || guardando}>
+          Preparar Chef IA
         </button>
       </div>
 
@@ -239,26 +249,31 @@ function ChefIaPanel() {
         <span className="hint">Queda guardada y se usa en las próximas sugerencias.</span>
       </div>
 
-      {cargando && (
+      {cargando && !(datos?.sugerencias || []).length && (
         <div className="chef-ia-cargando" role="status" aria-live="polite">
           <span className="chef-ia-spinner" aria-hidden="true" />
           <p className="hint">
             {categoriaLista
-              ? `Generando la receta de ${categoria} con IA...`
-              : 'Generando la receta con IA...'}
+              ? `Armando recetas de ${categoria}...`
+              : 'Armando recetas...'}
           </p>
         </div>
       )}
-      {!cargando && aviso && <div className="exito-msg">{aviso}</div>}
-      {!cargando && datos?.aviso && datos?.fase !== 'parcial' && <p className="hint">{datos.aviso}</p>}
-      {!cargando && error && <div className="error-msg">{error}</div>}
+      {esperandoIa && (datos?.sugerencias || []).length > 0 && (
+        <p className="hint chef-ia-parcial" role="status">
+          Recetas de respaldo listas. La IA sigue generando y las reemplazará al terminar.
+        </p>
+      )}
+      {aviso && <div className="exito-msg">{aviso}</div>}
+      {datos?.aviso && datos?.fase !== 'parcial' && !esperandoIa && <p className="hint">{datos.aviso}</p>}
+      {error && <div className="error-msg">{error}</div>}
       {fichaError && <div className="error-msg">{fichaError}</div>}
 
-      {!cargando && datos?.origen === 'local' && (
-        <p className="hint">{datos.mensaje || `Recetas guardadas del rubro ${categoria}. El aceite y los insumos de venta se ofrecen, no se cocinan.`}</p>
+      {datos?.origen === 'local' && !esperandoIa && (
+        <p className="hint">{datos.mensaje || `Recetas de respaldo del rubro ${categoria}.`}</p>
       )}
 
-      {!cargando && (datos?.sugerencias || []).length > 0 && (
+      {(datos?.sugerencias || []).length > 0 && (
         <>
           <h2 className="subtitulo-seccion">{datos?.origen === 'local' ? 'Recetas de respaldo' : 'Sugerencias del Chef'}</h2>
           <div className="sugerencias-chef">
