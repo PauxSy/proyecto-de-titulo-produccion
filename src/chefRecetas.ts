@@ -2,19 +2,31 @@
 // Los demás ingredientes salen del inventario aunque les quede más fecha.
 
 export type InsumoCocina = {
+  id?: string | number;
   producto: string;
   unidad_medida: string;
   cantidad_en_riesgo: number;
   dias_para_vencer: number | null;
   por_vencer: boolean;
+  prioridad_rescate?: boolean;
 };
 
-export type IngredienteMedido = { producto: string; cantidad: number; unidad: string };
+export type IngredienteMedido = {
+  producto: string;
+  cantidad: number;
+  unidad: string;
+  inventario_id?: string;
+  es_rescate?: boolean;
+};
 
 export type SugerenciaRescate = {
   tipo: 'receta';
   titulo: string;
   descripcion: string;
+  tipo_plato?: 'Salado' | 'Dulce' | 'Agridulce';
+  tiempo_minutos?: number;
+  porciones?: number;
+  implementos?: string[];
   insumos_usados: string[];
   ingredientes: IngredienteMedido[];
   pasos: string[];
@@ -32,7 +44,8 @@ const PREFERENCIA_CATEGORIA: Record<string, RegExp> = {
 };
 
 const CATEGORIAS_SALADAS = ['Comida Italiana', 'Comida Rápida', 'Comida Tailandesa', 'Comida Chilena', 'Comida China'];
-const DULCES_FUERA_DE_REPOSTERIA = /cacao|chocolate|manjar|colorante|vainilla|mermelada|mazapan|confite/;
+// Frutas en almíbar / conserva cuentan como dulce: no entran a cazuelas, caldos ni platos salados.
+const DULCES_FUERA_DE_REPOSTERIA = /cacao|chocolate|manjar|colorante|vainilla|mermelada|mazapan|confite|papaya|almibar|almíbar|fruta en conserva|durazno|pina en|piña en|cereza|compota|jalea/;
 
 export const normalizarTexto = (texto: string) => texto.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
 
@@ -489,16 +502,16 @@ const ESTILOS_CATEGORIA: Record<string, EstiloCategoria[]> = {
     { titulo: 'Huevos thai al sartén', extras: [/huevo/, /aceite/, /aji|limon/, /arroz|tomate/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Fríe los huevos a fuego medio-alto.', 'Sirve con arroz o tomate al lado.']) },
   ],
   'Comida Chilena': [
-    { titulo: 'Cazuela rápida', extras: [/pollo|carne/, /papa|choclo/, /cebolla|ajo|zanahoria/, /aceite/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Sofríe la base.', 'Cubre con agua y cocina 20 minutos.']) },
-    { titulo: 'Pebre', extras: [/tomate/, /cebolla|aji/, /aceite/, /limon/], implementos: 'tabla y bol', pasos: (t, i) => pasosPlato(t, i, ['Pica bien fino.', 'Deja reposar 5 minutos.']) },
-    { titulo: 'Charquicán', extras: [/papa/, /choclo|zapallo/, /carne|cebolla/, /aceite/], implementos: 'olla y pisón', pasos: (t, i) => pasosPlato(t, i, ['Cocina las verduras.', 'Aplasta y mezcla con la carne.']) },
-    { titulo: 'Pastel de papa exprés', extras: [/papa/, /carne|pollo/, /huevo|leche/, /aceite/], implementos: 'fuente y horno', pasos: (t, i) => pasosPlato(t, i, ['Arma capa de guiso y puré.', 'Gratina 10 minutos.']) },
-    { titulo: 'Tortilla de papa', extras: [/papa|cebolla/, /huevo/, /aceite/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Mezcla papa y huevo.', 'Cocina 4 minutos por lado.']) },
-    { titulo: 'Porotos con riendas', extras: [/poroto|lenteja/, /harina|fideo/, /cebolla|aji|tomate/, /aceite/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Cocina el poroto o similar.', 'Suma fideo y sofrito 8 minutos.']) },
-    { titulo: 'Pantrucas', extras: [/harina/, /huevo/, /aceite/, /cebolla|aji/], implementos: 'olla y cuchillo', pasos: (t, i) => pasosPlato(t, i, ['Corta tiras de masa.', 'Hiérvelas 6 minutos en el caldo.']) },
-    { titulo: 'Tomaticán', extras: [/tomate/, /cebolla/, /choclo|huevo/, /aceite/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Sofríe cebolla.', 'Suma tomate y cocina 10 minutos.']) },
-    { titulo: 'Sopaipillas', extras: [/harina/, /aceite/, /zapallo|huevo/, /(^|\s)sal fina|(^|\s)sal de mesa/], implementos: 'sartén y uslero', pasos: (t, i) => pasosPlato(t, i, ['Estira discos delgados.', 'Fríe 1 minuto por lado.']) },
-    { titulo: 'Completo italiano', extras: [/harina|pan/, /tomate/, /palta|queso|aceite/, /huevo/], implementos: 'tabla', pasos: (t, i) => pasosPlato(t, i, ['Abre el pan.', 'Arma tomate y el resto al momento.']) },
+    { titulo: 'Cazuela rápida', extras: [/pollo|carne/, /papa|choclo|tomate/, /cebolla|ajo|zanahoria|huevo/, /aceite/], implementos: 'olla', pasos: (t, i) => pasosPlato(t, i, ['Sofríe la base.', 'Cubre con agua y cocina 20 minutos.']) },
+    { titulo: 'Tomaticán', extras: [/tomate/, /huevo|cebolla|choclo/, /aceite/, /harina|queso/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Sofríe la base en aceite.', 'Suma tomate y cocina 10 minutos.']) },
+    { titulo: 'Huevos a la chilena', extras: [/huevo/, /tomate/, /aceite/, /harina|queso/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Fríe o revuelve los huevos.', 'Acompaña con tomate salteado.']) },
+    { titulo: 'Pantrucas', extras: [/harina/, /huevo/, /aceite/, /tomate|cebolla|aji/], implementos: 'olla y cuchillo', pasos: (t, i) => pasosPlato(t, i, ['Corta tiras de masa.', 'Hiérvelas 6 minutos en el caldo.']) },
+    { titulo: 'Sopaipillas', extras: [/harina/, /aceite/, /huevo|zapallo/, /(^|\s)sal fina|(^|\s)sal de mesa|tomate/], implementos: 'sartén y uslero', pasos: (t, i) => pasosPlato(t, i, ['Estira discos delgados.', 'Fríe 1 minuto por lado.']) },
+    { titulo: 'Completo italiano', extras: [/harina|pan/, /tomate/, /queso|palta|aceite/, /huevo/], implementos: 'tabla', pasos: (t, i) => pasosPlato(t, i, ['Abre el pan.', 'Arma tomate y el resto al momento.']) },
+    { titulo: 'Pebre', extras: [/tomate/, /aceite/, /cebolla|aji|huevo/, /limon|harina/], implementos: 'tabla y bol', pasos: (t, i) => pasosPlato(t, i, ['Pica bien fino.', 'Deja reposar 5 minutos.']) },
+    { titulo: 'Tortilla de papa', extras: [/papa|tomate|cebolla/, /huevo/, /aceite/, /harina|queso/], implementos: 'sartén', pasos: (t, i) => pasosPlato(t, i, ['Mezcla base y huevo.', 'Cocina 4 minutos por lado.']) },
+    { titulo: 'Charquicán', extras: [/papa|tomate/, /choclo|zapallo|huevo/, /carne|cebolla|queso/, /aceite/], implementos: 'olla y pisón', pasos: (t, i) => pasosPlato(t, i, ['Cocina las verduras.', 'Aplasta y mezcla.']) },
+    { titulo: 'Pastel de papa exprés', extras: [/papa|harina/, /carne|pollo|tomate/, /huevo|leche|queso/, /aceite/], implementos: 'fuente y horno', pasos: (t, i) => pasosPlato(t, i, ['Arma capa de guiso y cobertura.', 'Gratina 10 minutos.']) },
   ],
   'Repostería': [
     { titulo: 'Queque húmedo', extras: [/harina/, /huevo/, /azucar/, /mantequilla|leche/], implementos: 'bol, molde y horno', pasos: (t, i) => pasosPlato(t, i, ['Mezcla secos y húmedos.', 'Hornea 25 minutos a 180 °C.']) },
@@ -522,24 +535,43 @@ const universoParaCategoria = (categoria: string, proximos: InsumoCocina[], desp
     return true;
   });
 
-const armarEstiloCategoria = (categoria: string, universo: InsumoCocina[], estilo: EstiloCategoria) => {
-  const extras = unicos(
-    estilo.extras
-      .map((patron) => buscarInsumo(universo, patron))
-      .filter((item): item is InsumoCocina => item !== null)
-  );
-  const nombres: string[] = extras.map((item) => item.producto);
-  if (nombres.length === 0) {
-    nombres.push(
-      ...universo
-        .filter((item) => encajaEnCategoria(item.producto, categoria))
-        .slice(0, 3)
-        .map((item) => item.producto)
-    );
+const esSoloGrasaOSal = (nombre: string) =>
+  /aceite|(^|\s)sal fina|(^|\s)sal de mesa|^agua\b/.test(normalizarTexto(nombre));
+
+const puntuacionEstilo = (estilo: EstiloCategoria, universo: InsumoCocina[], proximos: InsumoCocina[]) => {
+  const clavesVencer = new Set(proximos.map((item) => normalizarTexto(item.producto)));
+  let matches = 0;
+  let rescates = 0;
+  let protagonistas = 0;
+  estilo.extras.forEach((patron, indice) => {
+    const hallado = buscarInsumo(universo, patron);
+    if (!hallado) return;
+    matches += 1;
+    if (!esSoloGrasaOSal(hallado.producto)) protagonistas += 1;
+    if (clavesVencer.has(normalizarTexto(hallado.producto))) rescates += 1;
+    if (indice === 0) protagonistas += 1; // el primer patrón suele ser el eje del plato
+  });
+  return { matches, protagonistas, rescates };
+};
+
+const armarEstiloCategoria = (categoria: string, universo: InsumoCocina[], estilo: EstiloCategoria, proximos: InsumoCocina[]) => {
+  const hallados = estilo.extras
+    .map((patron) => buscarInsumo(universo, patron))
+    .filter((item): item is InsumoCocina => item !== null);
+  const extras = unicos(hallados);
+  const nombres = extras.map((item) => item.producto);
+  const minMatches = Math.min(3, Math.max(2, Math.ceil(estilo.extras.length * 0.5)));
+  const conCuerpo = nombres.filter((nombre) => !esSoloGrasaOSal(nombre));
+  const primerPatron = estilo.extras[0] ? buscarInsumo(universo, estilo.extras[0]) : null;
+  // No publicar cazuela de solo aceite ni plantillas a medias.
+  if (nombres.length < minMatches || conCuerpo.length < 1 || !primerPatron) return null;
+  if (proximos.length > 0) {
+    const clavesVencer = new Set(proximos.map((item) => normalizarTexto(item.producto)));
+    const tieneRescate = nombres.some((nombre) => clavesVencer.has(normalizarTexto(nombre)));
+    if (!tieneRescate) return null;
   }
-  if (nombres.length === 0) return null;
   const ingredientes = ingredientesMedidos(nombres, universo);
-  if (ingredientes.length === 0) return null;
+  if (ingredientes.length < minMatches) return null;
   return publicar(
     categoria,
     estilo.titulo,
@@ -558,13 +590,26 @@ export const armarSugerenciasLocales = (categoria: string, proximos: InsumoCocin
     const clave = normalizarTexto(armada.titulo);
     if (!clave || vistas.has(clave)) return;
     if (CATEGORIAS_SALADAS.includes(categoria) && DULCES_FUERA_DE_REPOSTERIA.test(clave)) return;
+    if (armada.ingredientes.length < 2) return;
+    if (armada.ingredientes.every((ing) => esSoloGrasaOSal(ing.producto))) return;
+    if (proximos.length > 0) {
+      const clavesVencer = new Set(proximos.map((item) => normalizarTexto(item.producto)));
+      if (!armada.ingredientes.some((ing) => clavesVencer.has(normalizarTexto(ing.producto)))) return;
+    }
     vistas.add(clave);
     recetas.push(armada);
   };
-  const estilos = ESTILOS_CATEGORIA[categoria] || ESTILOS_CATEGORIA['Comida Rápida'];
-  for (const estilo of estilos) {
+  const estilos = [...(ESTILOS_CATEGORIA[categoria] || ESTILOS_CATEGORIA['Comida Rápida'])]
+    .map((estilo) => ({ estilo, score: puntuacionEstilo(estilo, universo, proximos) }))
+    .filter((fila) => fila.score.matches >= 2 && fila.score.protagonistas >= 1)
+    .sort((a, b) =>
+      b.score.rescates - a.score.rescates
+      || b.score.matches - a.score.matches
+      || b.score.protagonistas - a.score.protagonistas
+    );
+  for (const fila of estilos) {
     if (recetas.length >= 3) break;
-    agregar(armarEstiloCategoria(categoria, universo, estilo));
+    agregar(armarEstiloCategoria(categoria, universo, fila.estilo, proximos));
   }
   if (recetas.length >= 3) return recetas;
   const porVencer = proximos
@@ -572,9 +617,10 @@ export const armarSugerenciasLocales = (categoria: string, proximos: InsumoCocin
     .sort((a, b) => puntajeHeroe(b, categoria) - puntajeHeroe(a, categoria) || Number(a.dias_para_vencer) - Number(b.dias_para_vencer));
   const candidatos = porVencer.length > 0
     ? porVencer
-    : universo.filter((item) => encajaEnCategoria(item.producto, categoria));
+    : universo.filter((item) => encajaEnCategoria(item.producto, categoria) && !esSoloGrasaOSal(item.producto));
   for (const heroe of candidatos) {
     if (recetas.length >= 3) break;
+    if (esSoloGrasaOSal(heroe.producto)) continue;
     agregar(armarDesdePlantilla(categoria, heroe, universo));
   }
   return recetas;
@@ -612,6 +658,71 @@ const pasosDelModelo = (pasos: unknown) =>
     .filter((paso) => paso.length >= 12)
     .slice(0, 6);
 
+const TIPOS_PLATO = new Set(['Salado', 'Dulce', 'Agridulce']);
+
+const normalizarTipoPlato = (valor: unknown): SugerenciaRescate['tipo_plato'] | undefined => {
+  if (typeof valor !== 'string') return undefined;
+  const limpio = valor.trim();
+  if (TIPOS_PLATO.has(limpio)) return limpio as SugerenciaRescate['tipo_plato'];
+  const bajo = normalizarTexto(limpio);
+  if (bajo === 'salado') return 'Salado';
+  if (bajo === 'dulce') return 'Dulce';
+  if (bajo === 'agridulce') return 'Agridulce';
+  return undefined;
+};
+
+const pasosCoherentesConIngredientes = (pasos: string[], ingredientes: IngredienteMedido[]) => {
+  if (pasos.length === 0 || ingredientes.length === 0) return false;
+  const textoPasos = normalizarTexto(pasos.join(' '));
+  const mencionados = ingredientes.filter((ing) => {
+    const corto = normalizarTexto(cortoInsumo(ing.producto));
+    if (corto.length < 3) return true;
+    return textoPasos.includes(corto) || corto.split(/\s+/).some((token) => token.length >= 4 && textoPasos.includes(token));
+  });
+  return mencionados.length >= Math.ceil(ingredientes.length * 0.6);
+};
+
+/** Valida que cada inventario_id exista y que cantidad no exceda stock (si la unidad coincide). */
+export const validarRecetaContraInventario = (
+  receta: { ingredientes: IngredienteMedido[] },
+  insumos: InsumoCocina[],
+) => {
+  if (!Array.isArray(receta?.ingredientes) || receta.ingredientes.length === 0) {
+    return { ok: false as const, motivo: 'sin_ingredientes' };
+  }
+  const porId = new Map(
+    insumos
+      .filter((item) => item.id != null && String(item.id).length > 0)
+      .map((item) => [String(item.id), item]),
+  );
+  const porNombre = new Map(insumos.map((item) => [normalizarTexto(item.producto), item]));
+  for (const ing of receta.ingredientes) {
+    const porIdentificador = ing.inventario_id != null ? porId.get(String(ing.inventario_id)) : undefined;
+    const item = porIdentificador || porNombre.get(normalizarTexto(ing.producto));
+    if (!item) return { ok: false as const, motivo: `inventario_desconocido:${ing.producto}` };
+    const cantidad = Number(ing.cantidad);
+    if (!(cantidad > 0)) return { ok: false as const, motivo: `cantidad_invalida:${ing.producto}` };
+    const mismaUnidad = normalizarTexto(ing.unidad) === normalizarTexto(item.unidad_medida)
+      || (ing.unidad === 'unidades' && item.unidad_medida === 'un')
+      || (ing.unidad === 'huevos' && item.unidad_medida === 'un');
+    if (mismaUnidad && cantidad > Number(item.cantidad_en_riesgo) + 1e-6) {
+      return { ok: false as const, motivo: `stock_excedido:${ing.producto}` };
+    }
+  }
+  return { ok: true as const };
+};
+
+export const inventarioParaModelo = (insumos: InsumoCocina[]) =>
+  insumos.map((item) => ({
+    id: item.id != null ? String(item.id) : normalizarTexto(item.producto),
+    nombre: item.producto,
+    stock: Number(item.cantidad_en_riesgo),
+    unidad: item.unidad_medida,
+    dias_para_vencer: item.dias_para_vencer,
+    prioridad_rescate: item.prioridad_rescate === true
+      || (item.por_vencer === true && Number(item.dias_para_vencer) <= 3),
+  }));
+
 export const cerrarSugerenciaModelo = (entrada: {
   categoria: string;
   titulo: string;
@@ -620,6 +731,12 @@ export const cerrarSugerenciaModelo = (entrada: {
   pedidos?: Map<string, number>;
   insumos: InsumoCocina[];
   porVencer: InsumoCocina[];
+  tipo_plato?: unknown;
+  implementos?: unknown;
+  tiempo_minutos?: unknown;
+  porciones?: unknown;
+  idsPorNombre?: Map<string, string>;
+  rescatePorNombre?: Map<string, boolean>;
 }) => {
   const titulo = entrada.titulo.trim();
   const otrosPorVencer = entrada.porVencer.filter((item) => {
@@ -629,33 +746,78 @@ export const cerrarSugerenciaModelo = (entrada: {
   const permiteLacteo = entrada.categoria === 'Repostería'
     || entrada.categoria === 'Comida Italiana'
     || otrosPorVencer.length === 0;
-  let nombres = [...new Set(entrada.nombres.map((nombre) => nombre.trim()).filter(Boolean))]
+  const nombres = [...new Set(entrada.nombres.map((nombre) => nombre.trim()).filter(Boolean))]
     .filter((nombre) => permiteLacteo || rolInsumo(nombre) !== 'lacteo')
-    .filter((nombre) => encajaEnCategoria(nombre, entrada.categoria) || !DULCES_FUERA_DE_REPOSTERIA.test(normalizarTexto(nombre)));
+    .filter((nombre) => {
+      const texto = normalizarTexto(nombre);
+      if (CATEGORIAS_SALADAS.includes(entrada.categoria) && DULCES_FUERA_DE_REPOSTERIA.test(texto)) return false;
+      return encajaEnCategoria(nombre, entrada.categoria) || !CATEGORIAS_SALADAS.includes(entrada.categoria);
+    });
   if (CATEGORIAS_SALADAS.includes(entrada.categoria) && DULCES_FUERA_DE_REPOSTERIA.test(normalizarTexto(titulo))) {
     return null;
   }
-  const porVencerAfines = entrada.porVencer.filter((item) => encajaEnCategoria(item.producto, entrada.categoria));
-  const clavesVencer = new Set(porVencerAfines.map((item) => normalizarTexto(item.producto)));
-  const usaLoQueVence = (lista: string[]) => lista.some((nombre) => clavesVencer.has(normalizarTexto(nombre)));
-  if (porVencerAfines.length > 0 && !usaLoQueVence(nombres)) {
-    nombres = [...porVencerAfines.slice(0, 3).map((item) => item.producto), ...nombres];
-  }
-  const ingredientes = ingredientesMedidos(nombres, entrada.insumos, entrada.pedidos);
-  const minimo = entrada.insumos.length > 1 ? 2 : 1;
-  const pasos = pasosDelModelo(entrada.pasos);
-  const incluyeVencer = porVencerAfines.length === 0
-    || ingredientes.some((ing) => clavesVencer.has(normalizarTexto(ing.producto)));
-  if (ingredientes.length < minimo || pasos.length < 3 || !incluyeVencer || !tituloCoherente(titulo, ingredientes)) {
+  const tipoPlato = normalizarTipoPlato(entrada.tipo_plato);
+  if (CATEGORIAS_SALADAS.includes(entrada.categoria) && tipoPlato === 'Dulce') {
     return null;
   }
+  // Todos los por vencer coherentes con la categoría (mín. 1 obligatorio en la receta).
+  const porVencerAfines = entrada.porVencer.filter((item) => {
+    const texto = normalizarTexto(item.producto);
+    if (CATEGORIAS_SALADAS.includes(entrada.categoria) && DULCES_FUERA_DE_REPOSTERIA.test(texto)) return false;
+    return encajaEnCategoria(item.producto, entrada.categoria);
+  });
+  const clavesVencer = new Set(porVencerAfines.map((item) => normalizarTexto(item.producto)));
+  // Sin inyección forzada: solo se usan los nombres que devolvió el modelo.
+  const ingredientesBase = ingredientesMedidos(nombres, entrada.insumos, entrada.pedidos);
+  const ingredientes = ingredientesBase.map((ing) => {
+    const clave = normalizarTexto(ing.producto);
+    const ficha = entrada.insumos.find((fila) => normalizarTexto(fila.producto) === clave);
+    const inventarioId = entrada.idsPorNombre?.get(clave)
+      || (ficha?.id != null ? String(ficha.id) : undefined);
+    const esRescate = ficha?.por_vencer === true
+      || clavesVencer.has(clave)
+      || entrada.rescatePorNombre?.get(clave) === true;
+    return {
+      ...ing,
+      ...(inventarioId ? { inventario_id: inventarioId } : {}),
+      es_rescate: Boolean(esRescate),
+    };
+  });
+  const minimo = entrada.insumos.length > 1 ? 2 : 1;
+  const pasos = pasosDelModelo(entrada.pasos);
+  const rescatesEnReceta = ingredientes.filter((ing) => clavesVencer.has(normalizarTexto(ing.producto)));
+  // Obligatorio: al menos 1 insumo por vencer. Si no hay afines, no se puede validar rescate.
+  const incluyeVencer = porVencerAfines.length === 0
+    ? false
+    : rescatesEnReceta.length >= 1;
+  if (
+    ingredientes.length < minimo
+    || pasos.length < 3
+    || !incluyeVencer
+    || !tituloCoherente(titulo, ingredientes)
+    || !pasosCoherentesConIngredientes(pasos, ingredientes)
+  ) {
+    return null;
+  }
+  const implementos = (Array.isArray(entrada.implementos) ? entrada.implementos : [])
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const tiempo = Number(entrada.tiempo_minutos);
+  const porciones = Number(entrada.porciones);
   return {
     tipo: 'receta' as const,
     titulo,
+    tipo_plato: tipoPlato,
+    ...(Number.isFinite(tiempo) && tiempo > 0 ? { tiempo_minutos: Math.round(tiempo) } : {}),
+    ...(Number.isFinite(porciones) && porciones > 0 ? { porciones: Math.round(porciones) } : {}),
+    ...(implementos.length > 0 ? { implementos } : {}),
     descripcion: describirRescate(entrada.categoria, ingredientes, entrada.insumos),
     insumos_usados: ingredientes.map((ing) => ing.producto),
     ingredientes,
-    pasos: pasosConMedidas('olla o sartén, cuchillo y bol', ingredientes, pasos),
+    // Pasos del modelo tal cual (sin "Mide y separa..." ni plantillas estáticas).
+    pasos,
   };
 };
 

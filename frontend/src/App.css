@@ -2740,6 +2740,58 @@ body {
   line-height: 1.3;
 }
 
+.sugerencia-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.sugerencia-tipo-plato {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.sugerencia-tipo-salado {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.sugerencia-tipo-dulce {
+  background: #fce7f3;
+  color: #be185d;
+}
+
+.sugerencia-tipo-agridulce {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.sugerencia-meta-dato {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.sugerencia-implementos {
+  margin: 0 0 16px 0 !important;
+  font-size: 13px !important;
+  color: #64748b !important;
+}
+
 .sugerencia-card p {
   margin: 0 0 24px 0;
   font-size: 14px;

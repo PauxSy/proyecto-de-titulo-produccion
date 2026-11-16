@@ -6,7 +6,27 @@ import { consultaInventario, registrarMerma, soloAdministrador, soloBodegueroOAd
 import { cors } from 'hono/cors'; 
 import usuarios from './routes/usuarios';
 import recetas from './routes/recetas';
-import { armarSugerenciasLocales, cerrarSugerenciaModelo, elegirFamiliaIa, encajaEnCategoria, insumosUtilesParaModelo, normalizarTexto, recetaEsDistinta, tituloInvalido, tituloParecido, type InsumoCocina } from './chefRecetas';
+import {
+  armarSugerenciasLocales,
+  cerrarSugerenciaModelo,
+  elegirFamiliaIa,
+  encajaEnCategoria,
+  inventarioParaModelo,
+  insumosUtilesParaModelo,
+  normalizarTexto,
+  recetaEsDistinta,
+  tituloInvalido,
+  tituloParecido,
+  validarRecetaContraInventario,
+  type InsumoCocina,
+} from './chefRecetas';
+// TEMPORAL DEMO — revertir: borrar este import y el bloque DEMO en /ia/sugerencias
+import {
+  DEMO_CHEF_IA_DELAY_MS,
+  DEMO_CHEF_IA_RAPIDO,
+  adaptarRecetaDemoAInventario,
+  elegirRecetaDemo,
+} from './demoChefIaRecetas';
 
 type Bindings = {
   DATABASE_URL: string;
@@ -1696,10 +1716,10 @@ const MODELO_IA = '@cf/meta/llama-4-scout-17b-16e-instruct';
 const TTL_CACHE_IA_MS = 900_000;
 const cacheSugerenciasIa = new Map<string, { vence: number; cuerpo: any }>();
 const CATEGORIAS_NO_ALIMENTARIAS = ['Aseo y Limpieza', 'Embalaje', 'Utensilios Descartables'];
-const LIMITE_POR_VENCER_IA = 10;
+const LIMITE_POR_VENCER_IA = 15;
 const LIMITE_RECETAS_IA = 1;
 const LIMITE_INSUMOS_IA = 10;
-const LIMITE_DESPENSA_MODELO = 8;
+const LIMITE_DESPENSA_MODELO = 12;
 const CLAVE_CATEGORIA_RESTAURANTE = 'categoria_restaurante';
 const CATEGORIAS_RESTAURANTE = [
   'Repostería',
@@ -1815,7 +1835,8 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
       // FEFO: por producto, el lote vigente que vence primero; solo dentro de la alerta amarilla (HU-09)
       sql.query(
         `
-          SELECT p.nombre AS producto,
+          SELECT p.id AS id,
+                 p.nombre AS producto,
                  p.unidad_medida,
                  SUM(l.cantidad_disponible) AS cantidad_en_riesgo,
                  MIN(l.fecha_vencimiento)::text AS vence,
@@ -1848,7 +1869,7 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
       ),
       sql.query(
         `
-          SELECT nombre AS producto, unidad_medida, stock_actual AS cantidad
+          SELECT id, nombre AS producto, unidad_medida, stock_actual AS cantidad
           FROM producto
           WHERE stock_actual > 0
             AND NOT (categoria = ANY($1))
@@ -1916,13 +1937,18 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     })),
   };
 
-  const aInsumo = (fila: any, porVencerFlag: boolean, dias: number | null, cantidad: number): InsumoCocina => ({
-    producto: String(fila.producto),
-    unidad_medida: String(fila.unidad_medida || 'un'),
-    cantidad_en_riesgo: cantidad,
-    dias_para_vencer: dias,
-    por_vencer: porVencerFlag,
-  });
+  const aInsumo = (fila: any, porVencerFlag: boolean, dias: number | null, cantidad: number): InsumoCocina => {
+    const diasNum = dias != null && Number.isFinite(Number(dias)) ? Number(dias) : null;
+    return {
+      id: fila.id != null ? String(fila.id) : undefined,
+      producto: String(fila.producto),
+      unidad_medida: String(fila.unidad_medida || 'un'),
+      cantidad_en_riesgo: cantidad,
+      dias_para_vencer: diasNum,
+      por_vencer: porVencerFlag,
+      prioridad_rescate: porVencerFlag && diasNum != null && diasNum <= 3,
+    };
+  };
   const porVencerMarcados = proximosAVencer.map((fila) =>
     aInsumo(fila, true, Number(fila.dias_para_vencer), Number(fila.cantidad_en_riesgo))
   );
@@ -1934,13 +1960,42 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
     })
     .map((fila) => aInsumo(fila, false, null, Number(fila.cantidad)));
   const inventario = [...porVencerMarcados, ...despensa];
+  // Al modelo: todos los de rescate + despensa útil (capada) para no saturar el contexto.
+  const nombresDespensaUtil = new Set(
+    insumosUtilesParaModelo(categoriaRestaurante, despensa, Math.max(LIMITE_DESPENSA_MODELO, 20))
+      .map((nombre) => normalizarTexto(nombre)),
+  );
+  const inventarioModelo = inventarioParaModelo([
+    ...porVencerMarcados,
+    ...despensa.filter((item) => nombresDespensaUtil.has(normalizarTexto(item.producto))),
+  ]);
   const porNombre = new Map(inventario.map((item) => [normalizarTexto(item.producto), item.producto]));
+  const porId = new Map(
+    inventario
+      .filter((item) => item.id != null)
+      .map((item) => [String(item.id), item.producto]),
+  );
+  const idsPorNombre = new Map(
+    inventario
+      .filter((item) => item.id != null)
+      .map((item) => [normalizarTexto(item.producto), String(item.id)]),
+  );
+  const rescatePorNombre = new Map(
+    inventario.map((item) => [
+      normalizarTexto(item.producto),
+      item.prioridad_rescate === true || (item.por_vencer === true && Number(item.dias_para_vencer) <= 3),
+    ]),
+  );
   const resolverInsumo = (texto: unknown) => {
     const buscado = normalizarTexto(String(texto ?? ''));
     if (!buscado) return null;
     if (porNombre.has(buscado)) return porNombre.get(buscado) as string;
     const coincidencias = [...porNombre.entries()].filter(([clave]) => clave.includes(buscado) || buscado.includes(clave));
     return coincidencias.length === 1 ? coincidencias[0][1] : null;
+  };
+  const resolverPorIdONombre = (id: unknown, nombre: unknown) => {
+    if (id != null && String(id).length > 0 && porId.has(String(id))) return porId.get(String(id)) as string;
+    return resolverInsumo(nombre);
   };
 
   const inicio = Date.now();
@@ -1973,21 +2028,53 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
       insumos: receta.ingredientes.map((ing: any) => ing.producto),
     }));
   const despensaParaModelo = insumosUtilesParaModelo(categoriaRestaurante, despensa, LIMITE_DESPENSA_MODELO);
-  const porVencerAfines = listado.proximos_a_vencer.filter((item) => encajaEnCategoria(item.insumo, categoriaRestaurante));
-  const porVencerFuera = listado.proximos_a_vencer.filter((item) => !encajaEnCategoria(item.insumo, categoriaRestaurante));
-  const claveCache = `v18|${categoriaRestaurante}|${listado.proximos_a_vencer
+  const claveCache = `v23|${categoriaRestaurante}|${listado.proximos_a_vencer
     .map((item) => `${item.insumo}:${item.vence_en_dias}:${item.cantidad_disponible}`)
     .join(',')}|${despensaParaModelo.join(',')}`;
   const titulosChef = sugerenciasChef.map((item) => String(item.titulo || '')).filter(Boolean);
+  const porVencerCoherentes = porVencerMarcados
+    .filter((item) => encajaEnCategoria(item.producto, categoriaRestaurante))
+    .sort((a, b) => Number(a.dias_para_vencer ?? 99) - Number(b.dias_para_vencer ?? 99));
+  // Solo elige como crítico un insumo que encaje en la categoría (nada de papaya en chilena/italiana).
+  const criticoRescate = porVencerCoherentes[0] || null;
+  // Prompt compacto: solo campos esenciales (menos tokens de entrada → menos latencia).
+  const listadoPorVencerModelo = porVencerMarcados.slice(0, LIMITE_POR_VENCER_IA).map((item) => ({
+    id: item.id != null ? String(item.id) : undefined,
+    n: item.producto,
+    s: item.cantidad_en_riesgo,
+    u: item.unidad_medida,
+    d: item.dias_para_vencer,
+    pr: item.prioridad_rescate === true || Number(item.dias_para_vencer) <= 3,
+    ok: encajaEnCategoria(item.producto, categoriaRestaurante),
+  }));
+  const inventarioCompacto = inventarioModelo.map((item) => ({
+    id: item.id,
+    n: item.nombre,
+    s: item.stock,
+    u: item.unidad,
+    d: item.dias_para_vencer,
+    pr: item.prioridad_rescate,
+  }));
+  const menuCompacto = menuParaModelo.slice(0, 2).map((receta) => ({
+    id: receta.receta_id,
+    p: receta.plato,
+  }));
 
   const extraerUnaReceta = (cuerpo: any, previas: any[]) => {
     const usados = [...evitar, ...titulosChef, ...previas.map((item) => String(item.titulo || ''))];
-    const crudas = Array.isArray(cuerpo?.sugerencias) ? cuerpo.sugerencias : (cuerpo?.titulo ? [cuerpo] : []);
+    const principal = cuerpo?.receta_principal && typeof cuerpo.receta_principal === 'object'
+      ? cuerpo.receta_principal
+      : null;
+    const crudas = [
+      ...(principal ? [principal] : []),
+      ...(Array.isArray(cuerpo?.sugerencias) ? cuerpo.sugerencias : []),
+      ...(cuerpo?.titulo ? [cuerpo] : []),
+    ];
     for (const sugerencia of crudas) {
       const pedidos = new Map<string, number>();
       const desdeIngredientes = (Array.isArray(sugerencia?.ingredientes) ? sugerencia.ingredientes : [])
         .map((ing: any) => {
-          const nombre = resolverInsumo(ing?.nombre ?? ing?.producto);
+          const nombre = resolverPorIdONombre(ing?.inventario_id ?? ing?.id, ing?.nombre ?? ing?.producto);
           const cantidad = Number(ing?.cantidad);
           if (nombre && cantidad > 0) pedidos.set(normalizarTexto(nombre), cantidad);
           return nombre;
@@ -2000,62 +2087,68 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
       )];
       const titulo = typeof sugerencia?.titulo === 'string' ? sugerencia.titulo.trim() : '';
       if (tituloInvalido(titulo) || tituloParecido(titulo, usados, true)) continue;
+      const pasos = sugerencia?.preparacion ?? sugerencia?.pasos;
       const cerrada = cerrarSugerenciaModelo({
         categoria: categoriaRestaurante,
         titulo,
         nombres: insumos,
-        pasos: sugerencia?.pasos,
+        pasos,
         pedidos,
         insumos: inventario,
         porVencer: porVencerMarcados,
+        tipo_plato: sugerencia?.tipo_plato,
+        implementos: sugerencia?.implementos,
+        tiempo_minutos: sugerencia?.tiempo_minutos,
+        porciones: sugerencia?.porciones,
+        idsPorNombre,
+        rescatePorNombre,
       });
-      if (cerrada && recetaEsDistinta(cerrada, previas)) return cerrada;
+      if (!cerrada || !recetaEsDistinta(cerrada, previas)) continue;
+      const validacion = validarRecetaContraInventario(cerrada, inventario);
+      if (!validacion.ok) continue;
+      return cerrada;
     }
     return null;
   };
 
-  const generarUnaReceta = async (previas: any[], numero: number) => {
+  const generarUnaReceta = async (previas: any[], _numero: number, temperatura: number) => {
     const usados = [...evitar, ...titulosChef, ...previas.map((item) => String(item.titulo || ''))];
     const familia = elegirFamiliaIa(categoriaRestaurante, usados);
-    const heroe = porVencerAfines[(numero - 1) % Math.max(porVencerAfines.length, 1)];
-    const anteriores = [...sugerenciasChef, ...previas]
-      .map((item) => `${item.titulo} [${(item.ingredientes || []).map((ing: any) => ing.producto).slice(0, 4).join(', ')}]`)
-      .join(' | ');
+    const prohibidos = usados.slice(0, 6).join(', ');
     const mensajes = [
       {
         role: 'system',
         content:
-          `Eres el chef de un restaurante de ${categoriaRestaurante} en Chile. ` +
-          `Arma exactamente 1 plato real de ${categoriaRestaurante}, distinto a las sugerencias del chef. ` +
-          `Este plato DEBE ser: ${familia.prompt}. ` +
-          'Usa primero los insumos por vencer que combinan con esa cocina. ' +
-          'Nunca hagas salteado, curry, arroz o pasta de cacao, chocolate, manjar o colorante si no es Repostería. ' +
-          'Copia el nombre exacto de la despensa. No inventes insumos. 4 pasos concretos. Título corto = nombre del plato, nunca "Preparación de" ni "en su lugar". ' +
-          'receta_id 0 si no está en el menú. Español de Chile. SOLO JSON ' +
-          '{"sugerencias":[{"tipo":"receta","titulo":"...","receta_id":0,"insumos_usados":["..."],"ingredientes":[{"nombre":"...","cantidad":1}],"pasos":["..."]}]}',
+          `Chef ejecutivo de ${categoriaRestaurante}. 1 receta de familia: ${familia.prompt}. ` +
+          'Mínimo 1 insumo con ok=true de por_vencer; ideal maximizar rescates coherentes. ' +
+          'Completa con despensa. Sin dulces/almíbar en platos salados. Solo inventario (agua/sal libres). ' +
+          '1:1 ingredientes↔preparacion. Español Chile. SOLO JSON: ' +
+          '{"receta_principal":{"titulo":"","tipo_plato":"Salado|Dulce|Agridulce","tiempo_minutos":0,"porciones":0,' +
+          '"implementos":[""],"ingredientes":[{"inventario_id":"","nombre":"","cantidad":0,"unidad":"","es_rescate":true}],' +
+          '"preparacion":[""]}}',
       },
       {
         role: 'user',
         content:
-          `Categoría: ${categoriaRestaurante}.\n` +
-          `Familia obligatoria: ${familia.prompt}.\n` +
-          (heroe ? `Insumo protagonista de este plato: ${heroe.insumo}.\n` : '') +
-          `Insumos por vencer que SÍ combinan con el rubro:\n${JSON.stringify(porVencerAfines)}\n` +
-          `Insumos por vencer que NO debes usar en estos platos:\n${JSON.stringify(porVencerFuera)}\n` +
-          `Menú de referencia:\n${JSON.stringify(menuParaModelo)}\n` +
-          `Despensa, se puede usar aunque no venza:\n${JSON.stringify(despensaParaModelo)}` +
-          (anteriores ? `\nSugerencias del chef, prohibido copiarlas o hacer variantes: ${anteriores}.` : '') +
-          (usados.length > 0 ? `\nTítulos prohibidos: ${usados.join(', ')}.` : '') +
-          (renovar ? '\nPropón una combinación distinta a las de antes.' : ''),
+          `cat:${categoriaRestaurante}|familia:${familia.prompt}\n` +
+          (criticoRescate ? `critico:${criticoRescate.producto}|id:${criticoRescate.id ?? ''}|d:${criticoRescate.dias_para_vencer}\n` : '') +
+          `por_vencer(id,n,s,u,d,pr,ok):\n${JSON.stringify(listadoPorVencerModelo)}\n` +
+          `despensa(id,n,s,u,d,pr):\n${JSON.stringify(inventarioCompacto)}\n` +
+          (menuCompacto.length > 0 ? `menu:${JSON.stringify(menuCompacto)}\n` : '') +
+          (prohibidos ? `no_copiar:${prohibidos}\n` : '') +
+          (renovar ? 'distinta_a_antes\n' : '') +
+          'JSON receta_principal',
       },
     ];
     try {
       const respuesta = await c.env.AI.run(MODELO_IA, {
         messages: mensajes,
-        max_tokens: 400,
-        temperature: numero > 1 || renovar ? 0.75 : 0.45,
+        max_tokens: 450,
+        temperature: temperatura,
       });
-      return extraerUnaReceta(extraerJsonModelo(respuesta), previas);
+      const json = extraerJsonModelo(respuesta);
+      if (!json) return null;
+      return extraerUnaReceta(json, previas);
     } catch {
       return null;
     }
@@ -2083,6 +2176,33 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
       try {
+        // TEMPORAL DEMO: 5 recetas prearmadas/categoría + espera 3s (sin Llama). Revertir: DEMO_CHEF_IA_RAPIDO=false
+        if (DEMO_CHEF_IA_RAPIDO) {
+          enviar({
+            ...cuerpoChef(`Armando recetas de Chef IA para ${categoriaRestaurante}...`, 'parcial'),
+            pendientes_ia: LIMITE_RECETAS_IA,
+            receta_en_curso: 1,
+            demo_rapido: true,
+          });
+          enviar(cuerpoIa([], 'ia-espera', 1));
+          await new Promise((resolve) => setTimeout(resolve, DEMO_CHEF_IA_DELAY_MS));
+          const cruda = elegirRecetaDemo(categoriaRestaurante, evitar);
+          const recetaDemo = cruda
+            ? adaptarRecetaDemoAInventario(cruda, inventario)
+            : null;
+          if (recetaDemo) {
+            const cuerpo = {
+              ...cuerpoIa([recetaDemo], 'final', 0),
+              demo_rapido: true,
+              mensaje: `Demo rápida · ${categoriaRestaurante}`,
+            };
+            enviar(cuerpo);
+          } else {
+            enviar(cuerpoChef(`Recetas de ${categoriaRestaurante} con los insumos que vencen primero.`, 'final'));
+          }
+          return;
+        }
+
         if (renovar) cacheSugerenciasIa.delete(claveCache);
         const guardado = renovar ? undefined : cacheSugerenciasIa.get(claveCache);
         if (guardado && guardado.vence > Date.now()) {
@@ -2098,9 +2218,9 @@ app.get('/ia/sugerencias', soloChefOAdministrador, async (c) => {
         for (let n = 1; n <= LIMITE_RECETAS_IA; n++) {
           enviar(cuerpoIa(recetas, 'ia-espera', n));
           let receta = null;
-          for (let intento = 0; intento < 2 && !receta; intento++) {
-            receta = await generarUnaReceta(recetas, n);
-          }
+          // Un intento a 0.35; solo si falla JSON/validación → reintento a 0.2 (evita doble llamada).
+          receta = await generarUnaReceta(recetas, n, 0.35);
+          if (!receta) receta = await generarUnaReceta(recetas, n, 0.2);
           if (!receta) continue;
           recetas.push(receta);
           enviar(cuerpoIa(recetas, n === LIMITE_RECETAS_IA ? 'final' : 'ia-parcial', n === LIMITE_RECETAS_IA ? 0 : n + 1));

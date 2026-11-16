@@ -53,23 +53,44 @@ function TarjetaReceta({ item, porVencer, sello, abrirFicha, abriendoFicha }) {
   const proximos = proximosDeLaReceta(item.ingredientes, porVencer)
   const porNombre = new Map(porVencer.map((fila) => [normalizar(fila.producto), fila]))
   const nombresProximos = (item.ingredientes || [])
-    .filter((ing) => proximos.has(normalizar(ing.producto)))
+    .filter((ing) => proximos.has(normalizar(ing.producto)) || ing.es_rescate === true)
     .map((ing) => ing.producto)
+  const tipoPlato = typeof item.tipo_plato === 'string' ? item.tipo_plato : ''
+  const meta = [
+    tipoPlato,
+    item.tiempo_minutos ? `${item.tiempo_minutos} min` : '',
+    item.porciones ? `${item.porciones} porción(es)` : '',
+  ].filter(Boolean)
+  const implementos = Array.isArray(item.implementos) ? item.implementos.filter(Boolean) : []
   return (
     <article className={`sugerencia-card${sello === 'Chef IA' ? ' sugerencia-card-ia' : ''}`}>
       <span className="codigo">{sello}</span>
       <h3>{item.titulo}</h3>
+      {meta.length > 0 && (
+        <div className="sugerencia-meta">
+          {tipoPlato && <span className={`sugerencia-tipo-plato sugerencia-tipo-${normalizar(tipoPlato)}`}>{tipoPlato}</span>}
+          {item.tiempo_minutos ? <span className="sugerencia-meta-dato">{item.tiempo_minutos} min</span> : null}
+          {item.porciones ? <span className="sugerencia-meta-dato">{item.porciones} porción(es)</span> : null}
+        </div>
+      )}
+      {implementos.length > 0 && (
+        <p className="sugerencia-implementos">Implementos: {implementos.join(', ')}</p>
+      )}
       <h4>Ingredientes</h4>
       <ul className="sugerencia-lista">
         {(item.ingredientes || []).map((ing) => {
-          const ficha = proximos.has(normalizar(ing.producto)) ? porNombre.get(normalizar(ing.producto)) : null
+          const esRescate = proximos.has(normalizar(ing.producto)) || ing.es_rescate === true
+          const ficha = esRescate ? porNombre.get(normalizar(ing.producto)) : null
           return (
-            <li key={ing.producto} className={ficha ? 'sugerencia-por-vencer' : undefined}>
+            <li key={ing.producto} className={esRescate ? 'sugerencia-por-vencer' : undefined}>
               <span className="sugerencia-insumo-nombre">
                 <strong>{new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 }).format(ing.cantidad)} {ing.unidad}</strong>
                 de {cortoInsumo(ing.producto)}
                 {ficha && (
                   <span className="sugerencia-vence">vence {ficha.vence} · {ficha.dias_para_vencer} día(s)</span>
+                )}
+                {!ficha && ing.es_rescate === true && (
+                  <span className="sugerencia-vence">prioridad rescate</span>
                 )}
               </span>
             </li>
@@ -154,6 +175,7 @@ function ChefIaPanel() {
     setEsperandoIa(data.fase === 'parcial' || data.fase === 'ia-espera')
     if (data.fase === 'final') {
       setAviso((texto) => {
+        if (data.desde_cache) return 'Chef IA desde caché (hasta 15 min). Más rápido en este click.'
         if (texto && texto.startsWith('Preparando')) return 'Sugerencias listas. Quedan en caché 15 minutos.'
         if (texto && texto.startsWith('Generando')) return 'Listo: recetas nuevas de Chef IA.'
         return texto
@@ -411,7 +433,7 @@ function ChefIaPanel() {
       {porVencer.length > 0 && (
         <>
           <h2 className="subtitulo-seccion">Insumos por vencer</h2>
-          <p className="hint">Chef IA usa los 10 que vencen primero y propone 1 receta.</p>
+          <p className="hint">Hasta 15 por vencer · mínimo 1 en cada receta (ideal: el máximo coherente) · despensa para completar · 2.º click suele venir de caché (~15 min).</p>
           <ul className="lista-recetas">
             {porVencer.map((item) => (
               <li key={item.producto}>
